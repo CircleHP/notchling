@@ -116,6 +116,24 @@ make install
 
 Either needs macOS 14+, a Swift 6 toolchain (Xcode 16+ or its Command Line Tools) and `jq`.
 
+### Upgrading
+
+```sh
+brew upgrade notchling
+brew services restart notchling
+```
+
+The restart is not optional: Homebrew replaces the files but leaves the running app alone, so the
+widget keeps running the version it started with until something restarts it.
+
+Nothing needs rewiring. The hooks record `$(brew --prefix)/bin/notchling-hook` and the status line the
+`opt` path, both of which Homebrew repoints at the new version. On the plugin route, `/plugin update
+notchling@circlehp` picks up the new hooks.
+
+If you use the **iTerm2 or Terminal.app** jump, macOS asks for permission to control them again after
+an upgrade — an ad-hoc signature's identity changes with every build, so the previous grant no longer
+matches. Warp is unaffected.
+
 ### What it does to your machine
 
 Whichever route, the only file outside its own install directory that Notchling touches is

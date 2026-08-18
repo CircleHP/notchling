@@ -1,19 +1,27 @@
 name: Release
 
-# A tag builds and publishes. A manual run builds and uploads the artifact without publishing, so
-# the whole path can be exercised before there is a tag to get wrong.
+# Three ways in, and they differ only in what happens at the end:
+#
+#   dispatch with a version   bumps the version, tags it, builds and publishes
+#   push of a v* tag          builds and publishes that tag, for a locally-made tag
+#   dispatch with none        builds and uploads the artifact, publishing nothing — a real dry run
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, without the leading v. Blank builds without publishing.
+        required: false
+        default: ""
 
-# Publishing a release writes to the repository; nothing else here does.
+# Publishing a release, and pushing the version bump that precedes it, both write to the repository.
 permissions:
   contents: write
 
 # Never cancel a run that might be halfway through publishing.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -34,12 +42,55 @@ jobs:
           xcodebuild -version
 
       # A release ships a binary nobody compiled themselves, so it runs the suite rather than
-      # trusting that the commit was green when it landed on main.
+      # trusting that the commit was green when it landed on main. Before the tag, deliberately:
+      # a tag is a promise, and one pointing at a failing tree is worse than no tag.
       - name: Test
         run: make test
 
       - name: Assert the hook binary was built, so no test skipped itself
         run: test -x .build/debug/notchling-hook
+
+      # The version lives in two files because two different things read it: `make dist` names the
+      # tarball from the plist, and an installed plugin updates when its own version moves.
+      - name: Bump and tag
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          case "$VERSION" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "not a version: $VERSION" >&2; exit 1 ;;
+          esac
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "v$VERSION already exists" >&2
+            exit 1
+          fi
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" Resources/Info.plist
+          manifest=plugins/notchling/.claude-plugin/plugin.json
+          jq --arg v "$VERSION" '.version = $v' "$manifest" > "$manifest.tmp" && mv "$manifest.tmp" "$manifest"
+
+          git config user.name "CircleHP"
+          git config user.email "evmenovdv@gmail.com"
+          if ! git diff --quiet; then
+            git commit -aqm "chore: $VERSION"
+            git push origin HEAD:main
+          fi
+          git tag -a "v$VERSION" -m "Notchling $VERSION"
+          git push origin "v$VERSION"
+
+          {
+            echo "RELEASE_TAG=v$VERSION"
+            echo "PUBLISH=true"
+          } >> "$GITHUB_ENV"
+
+      - name: Publish a tag that was pushed by hand
+        if: github.ref_type == 'tag'
+        run: |
+          {
+            echo "RELEASE_TAG=$GITHUB_REF_NAME"
+            echo "PUBLISH=true"
+          } >> "$GITHUB_ENV"
 
       # The tag, the app's version and the plugin's version all have to agree: a formula's url
       # embeds the tag, `make dist` names the tarball from the plist, and the plugin's version is
@@ -48,17 +99,17 @@ jobs:
         run: |
           plist=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
           plugin=$(jq -r .version plugins/notchling/.claude-plugin/plugin.json)
-          echo "plist=$plist plugin=$plugin ref=$GITHUB_REF_NAME type=$GITHUB_REF_TYPE"
+          echo "plist=$plist plugin=$plugin tag=${RELEASE_TAG:-none}"
           test "$plist" = "$plugin"
-          if [ "$GITHUB_REF_TYPE" = tag ]; then test "v$plist" = "$GITHUB_REF_NAME"; fi
+          if [ "${PUBLISH:-false}" = true ]; then test "v$plist" = "$RELEASE_TAG"; fi
 
       # `make dist` verifies its own output: both architectures, the macOS 14 floor, the archive
       # layout a formula expects, a signature that survives unpacking, and a matching checksum.
       - name: Build the tarball
         run: make dist SIGN_ID=
 
-      # Uploaded on every run, including manual ones. That is what makes a dispatch a real dry run
-      # rather than a rehearsal of the first half.
+      # Uploaded on every run, including ones that publish nothing. That is what makes a dry run a
+      # real one rather than a rehearsal of the first half.
       - name: Upload the artifact
         uses: actions/upload-artifact@v7
         with:
@@ -66,16 +117,16 @@ jobs:
           path: .build/dist/*
           if-no-files-found: error
 
-      # The checksum file ships beside the tarball so the formula's sha256 can be taken from the
-      # release rather than recomputed by hand — but verify it against the download anyway.
+      # The checksum file ships beside the tarball so a formula's sha256 can be taken from the
+      # release rather than recomputed by hand — though the tap verifies it against the download.
       - name: Publish
-        if: github.ref_type == 'tag'
+        if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$RELEASE_TAG" \
             ".build/dist/notchling-$version-universal.tar.gz" \
             ".build/dist/notchling-$version-universal.tar.gz.sha256" \
-            --title "$GITHUB_REF_NAME" \
+            --title "$RELEASE_TAG" \
             --generate-notes
