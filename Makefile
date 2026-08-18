@@ -83,6 +83,7 @@ dist:
 	# would otherwise vary between machines for no benefit.
 	tar --no-mac-metadata -C "$(STAGE)" -czf "$(DIST_DIR)/$(TARBALL)" "$(BUNDLE)"
 	cd "$(DIST_DIR)" && shasum -a 256 "$(TARBALL)" > "$(TARBALL).sha256"
+	./verify-dist.sh "$(STAGE)/$(BUNDLE)" "$(DIST_DIR)/$(TARBALL)"
 	@echo
 	@cat "$(DIST_DIR)/$(TARBALL).sha256"
 
