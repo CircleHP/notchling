@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A superseded push should not keep a macOS runner busy.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build and test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pinned rather than macos-latest on purpose: Package.swift declares
+        # swift-tools-version 6.0 and .macOS(.v14), and an image rolling forward is
+        # exactly the kind of thing that turns a green build red on an unrelated day.
+        #
+        # macos-15 is the oldest image still supported (macos-14 is deprecated) and
+        # carries the Xcode 16 toolchain the package declares as its floor. macos-26
+        # is where the project is actually developed, so both ends are covered.
+        os: [macos-15, macos-26]
+    steps:
+      - uses: actions/checkout@v7
+
+      # Recorded so a failure arriving on an unrelated day can be attributed to a
+      # toolchain bump rather than to whichever commit happened to trigger it.
+      - name: Toolchain
+        run: |
+          sw_vers
+          swift --version
+          xcodebuild -version
+
+      # Warnings-as-errors belongs in CI and not in the local loop: mid-refactor
+      # warnings are useful while you work, and only matter at the point of merge.
+      - name: Build, warnings as errors
+        run: swift build -c release -Xswiftc -warnings-as-errors
+
+      # `make test` rather than `swift test`. The hook-contract tests drive the real
+      # notchling-hook binary as a subprocess and skip themselves when it is absent,
+      # so a bare `swift test` would quietly not run the tests covering the one
+      # contract that can break a user's session.
+      - name: Test
+        run: make test
+
+      # That skip is silent, so prove it did not happen. Without this the job could
+      # be green while testing less than it appears to.
+      - name: Assert the hook binary was built, so no test skipped itself
+        run: test -x .build/debug/notchling-hook
+
+      # What `make install` assembles, minus everything that touches $HOME. Install
+      # itself must never run here: it writes to ~/Applications and edits
+      # ~/.claude/settings.json. SIGN_ID= forces ad-hoc signing rather than reading a
+      # login keychain that does not exist on a runner.
+      - name: Bundle, and verify the signature seals it
+        run: |
+          make bundle SIGN_ID=
+          codesign --verify --deep --strict .build/bundle/Notchling.app

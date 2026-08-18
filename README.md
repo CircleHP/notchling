@@ -1,5 +1,9 @@
 # Notchling
 
+<p align="center">
+  <a href="https://github.com/CircleHP/notchling/actions/workflows/ci.yml"><img src="https://github.com/CircleHP/notchling/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI: build and test on macOS 15 and 26"></a>
+</p>
+
 **A native macOS notch widget that shows what every Claude Code session is doing — and gets you back to
 the one that needs you.** Click a row, land in the terminal tab that owns it.
 
@@ -104,6 +108,10 @@ of subagent hook payloads, and a Warp environment variable. Every one of them is
 degrades to something still usable rather than failing, so the widget keeps working when a field it does
 not recognise appears. If something ever does stop working, a Claude Code or Warp update is the first
 thing to check.
+
+Every push and pull request is built and tested on **macOS 15 and macOS 26**: a release build with
+warnings treated as errors, the full suite, and the signed `.app` that `make install` assembles. The badge
+at the top reports the state of `main` — so what a clone gets you is whatever that badge last said.
 
 ## Contributing
 
