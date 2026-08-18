@@ -14,9 +14,29 @@
 #
 set -euo pipefail
 
-MODE="${1:-install}"
+MODE="${1:-}"
 HOOK_COMMAND="${2:-}"
 SETTINGS="$HOME/.claude/settings.json"
+
+usage() {
+  cat <<'USAGE'
+notchling-hooks — wire the Claude Code hooks that feed the Notchling widget
+
+  setup                       ask about hooks, the status line and starting at login
+  install       [PATH]        wire the hooks, appending to any already configured
+  uninstall     [PATH]        remove only the entries this installed
+  statusline    [PATH]        add the plan-usage status line
+  no-statusline               remove it again, if this installed it
+
+PATH is optional: without one, the hook binary and the status line script are found
+through PATH, the Homebrew prefix, or ~/Applications.
+USAGE
+}
+
+# No mode used to mean `install`, so a bare invocation silently edited settings.json.
+case "$MODE" in
+  ""|-h|--help|help) usage; exit 0 ;;
+esac
 
 # PostToolUse is deliberately absent: its payload carries `tool_output`, which can be megabytes,
 # and PreToolUse already tells the widget which tool is running.
