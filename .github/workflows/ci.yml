@@ -71,7 +71,15 @@ jobs:
       # and it is the only place a universal build can break before a tag depends on
       # it. It rebuilds rather than reusing the native bundle above, which is the
       # point: --arch moves SwiftPM's output directory.
+      #
+      # macos-26 only. The universal build needs a toolchain that can link one:
+      # Xcode 16.4 / Swift 6.1.2 on macos-15 fails in CreateUniversalBinary with
+      # duplicate output files whose paths are malformed, while Xcode 26.6 /
+      # Swift 6.3.3 builds it. That costs nothing here — a release is built on one
+      # machine, and every other step above still runs on both, so the floor
+      # toolchain the package declares stays covered.
       - name: Dist tarball
+        if: matrix.os == 'macos-26'
         run: |
           make dist SIGN_ID=
           version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
