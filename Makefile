@@ -5,13 +5,24 @@
 
 APP_NAME    := Notchling
 BUNDLE      := $(APP_NAME).app
-BUILD_DIR   := .build/release
 STAGE       := .build/bundle
+DIST_DIR    := .build/dist
 INSTALL_DIR := $(HOME)/Applications
 INSTALLED   := $(INSTALL_DIR)/$(BUNDLE)
 HOOK_PATH   := $(INSTALLED)/Contents/MacOS/notchling-hook
 STATUSLINE_PATH := $(INSTALLED)/Contents/Resources/statusline-usage.sh
 AGENT_PLIST := $(HOME)/Library/LaunchAgents/local.notchling.plist
+
+# A local build is native and fast; a distribution build is universal, so a Mac that downloads the
+# binary rather than compiling it can run it whatever its architecture. Set by `dist`, not by hand.
+# --arch also moves the output: .build/release stays the native symlink, universal builds land under
+# .build/apple, and a BUILD_DIR that does not follow would silently ship a single-architecture app.
+UNIVERSAL   :=
+SWIFT_ARCHS := $(if $(UNIVERSAL),--arch arm64 --arch x86_64)
+BUILD_DIR   := $(if $(UNIVERSAL),.build/apple/Products/Release,.build/release)
+
+VERSION := $(shell /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+TARBALL := notchling-$(VERSION)-universal.tar.gz
 
 # Ad-hoc signing works fine. A real identity is only worth it if you use the iTerm2/Terminal focus
 # fallbacks: an ad-hoc signature's hash changes on every rebuild, so macOS re-asks for AppleEvents
@@ -20,12 +31,12 @@ AGENT_PLIST := $(HOME)/Library/LaunchAgents/local.notchling.plist
 SIGN_ID ?= $(shell security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development/ {print $$2; exit}')
 CODESIGN_ID := $(if $(SIGN_ID),$(SIGN_ID),-)
 
-.PHONY: all build test bundle icon install install-hooks uninstall-hooks statusline no-statusline sessions uninstall run stop restart autostart no-autostart clean
+.PHONY: all build test bundle dist icon install install-hooks uninstall-hooks statusline no-statusline sessions uninstall run stop restart autostart no-autostart clean
 
 all: bundle
 
 build:
-	swift build -c release
+	swift build -c release $(SWIFT_ARCHS)
 
 # The hook-contract tests drive the real notchling-hook binary, so build it first.
 test:
@@ -45,7 +56,9 @@ bundle: build
 	cp Resources/Info.plist "$(STAGE)/$(BUNDLE)/Contents/Info.plist"
 	cp Resources/Notchling.icns "$(STAGE)/$(BUNDLE)/Contents/Resources/Notchling.icns"
 	cp statusline-usage.sh "$(STAGE)/$(BUNDLE)/Contents/Resources/statusline-usage.sh"
+	cp install-hooks.sh "$(STAGE)/$(BUNDLE)/Contents/Resources/install-hooks.sh"
 	chmod +x "$(STAGE)/$(BUNDLE)/Contents/Resources/statusline-usage.sh"
+	chmod +x "$(STAGE)/$(BUNDLE)/Contents/Resources/install-hooks.sh"
 	cp "$(BUILD_DIR)/$(APP_NAME)" "$(STAGE)/$(BUNDLE)/Contents/MacOS/$(APP_NAME)"
 	cp "$(BUILD_DIR)/notchling-hook" "$(STAGE)/$(BUNDLE)/Contents/MacOS/notchling-hook"
 	printf 'APPL????' > "$(STAGE)/$(BUNDLE)/Contents/PkgInfo"
@@ -58,6 +71,20 @@ bundle: build
 	  echo "      just re-ask for AppleEvents permission after each reinstall if you use the"; \
 	  echo "      iTerm2/Terminal focus fallbacks."; \
 	fi
+
+# The release tarball a Homebrew formula downloads, with its checksum beside it. Compute the formula's
+# sha256 from this file on every release: a stale one looks exactly like a compromised download.
+dist:
+	$(MAKE) bundle UNIVERSAL=1
+	mkdir -p "$(DIST_DIR)"
+	rm -f "$(DIST_DIR)/$(TARBALL)" "$(DIST_DIR)/$(TARBALL).sha256"
+	# Signatures live inside the Mach-O files and in Contents/_CodeSignature, both ordinary file
+	# content, so tar carries them intact. --no-mac-metadata keeps out the AppleDouble entries that
+	# would otherwise vary between machines for no benefit.
+	tar --no-mac-metadata -C "$(STAGE)" -czf "$(DIST_DIR)/$(TARBALL)" "$(BUNDLE)"
+	cd "$(DIST_DIR)" && shasum -a 256 "$(TARBALL)" > "$(TARBALL).sha256"
+	@echo
+	@cat "$(DIST_DIR)/$(TARBALL).sha256"
 
 install: bundle stop
 	mkdir -p "$(INSTALL_DIR)"
