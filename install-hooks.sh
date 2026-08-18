@@ -5,11 +5,11 @@
 # Additive and idempotent, deliberately: other tools register hooks on the same events, and replacing
 # an event's array instead of appending to it would silently break them.
 #
-# Usage:
-#   ./install-hooks.sh install       /path/to/notchling-hook
-#   ./install-hooks.sh uninstall     /path/to/notchling-hook
-#   ./install-hooks.sh statusline    /path/to/statusline-usage.sh
-#   ./install-hooks.sh no-statusline ""
+# Usage, with the path optional in every mode — see "Path resolution" below:
+#   ./install-hooks.sh install       [/path/to/notchling-hook]
+#   ./install-hooks.sh uninstall     [/path/to/notchling-hook]
+#   ./install-hooks.sh statusline    [/path/to/statusline-usage.sh]
+#   ./install-hooks.sh no-statusline
 #
 set -euo pipefail
 
@@ -36,10 +36,67 @@ die() { printf 'install-hooks: %s\n' "$1" >&2; exit 1; }
 
 command -v jq >/dev/null 2>&1 || die "jq is required"
 
+# --- Path resolution -------------------------------------------------------------------------
+#
+# `make` passes an explicit path, and so does anything scripting this. A package-manager install
+# cannot: it reaches this script through a symlink that knows neither the prefix it was installed
+# under nor where the bundle landed, and the person running it has no reason to know either.
+#
+# Whatever is resolved here gets written into settings.json as an absolute path, so it has to
+# survive an upgrade. A Homebrew upgrade moves the versioned Cellar directory but not `bin` or
+# `opt`, which is why neither resolver ever returns a Cellar path: a stale one leaves sessions
+# visible through the registry but stuck in idle/working, with nothing on screen to explain why.
+
+brew_prefix() {
+  command -v brew >/dev/null 2>&1 || return 1
+  brew --prefix 2>/dev/null
+}
+
+resolve_hook() {
+  if command -v notchling-hook >/dev/null 2>&1; then
+    command -v notchling-hook
+    return 0
+  fi
+
+  prefix=$(brew_prefix) || prefix=""
+  if [ -n "$prefix" ] && [ -x "$prefix/bin/notchling-hook" ]; then
+    printf '%s\n' "$prefix/bin/notchling-hook"
+    return 0
+  fi
+
+  if [ -x "$HOME/Applications/Notchling.app/Contents/MacOS/notchling-hook" ]; then
+    printf '%s\n' "$HOME/Applications/Notchling.app/Contents/MacOS/notchling-hook"
+    return 0
+  fi
+
+  return 1
+}
+
+resolve_statusline() {
+  prefix=$(brew_prefix) || prefix=""
+  if [ -n "$prefix" ] && [ -x "$prefix/opt/notchling/Notchling.app/Contents/Resources/statusline-usage.sh" ]; then
+    printf '%s\n' "$prefix/opt/notchling/Notchling.app/Contents/Resources/statusline-usage.sh"
+    return 0
+  fi
+
+  if [ -x "$HOME/Applications/Notchling.app/Contents/Resources/statusline-usage.sh" ]; then
+    printf '%s\n' "$HOME/Applications/Notchling.app/Contents/Resources/statusline-usage.sh"
+    return 0
+  fi
+
+  return 1
+}
+
 # --- Status line -----------------------------------------------------------------------------
 #
 # A separate mode because it is a separate decision with a visible cost: configuring any status line
 # makes Claude Code drop some of its footer hints.
+if [ "$MODE" = "statusline" ] && [ -z "$HOOK_COMMAND" ]; then
+  HOOK_COMMAND=$(resolve_statusline) \
+    || die "could not find statusline-usage.sh — install the app first, or pass its path"
+  printf 'install-hooks: using %s\n' "$HOOK_COMMAND"
+fi
+
 if [ "$MODE" = "statusline" ] || [ "$MODE" = "no-statusline" ]; then
   SETTINGS_BACKUP="$SETTINGS.notchling-backup-$(date +%Y%m%d%H%M%S)"
   mkdir -p "$(dirname "$SETTINGS")"
@@ -86,7 +143,11 @@ if [ "$MODE" = "statusline" ] || [ "$MODE" = "no-statusline" ]; then
   exit 0
 fi
 
-[ -n "$HOOK_COMMAND" ] || die "no hook command given"
+if [ -z "$HOOK_COMMAND" ]; then
+  HOOK_COMMAND=$(resolve_hook) \
+    || die "could not find notchling-hook — install the app first, or pass its path"
+  printf 'install-hooks: using %s\n' "$HOOK_COMMAND"
+fi
 
 if [ "$MODE" = "install" ] && [ ! -x "$HOOK_COMMAND" ]; then
   die "hook binary is not executable: $HOOK_COMMAND"
