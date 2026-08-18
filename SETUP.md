@@ -9,8 +9,9 @@ something looks wrong. The [README](README.md) covers what the thing is; this is
 |---|---|
 | macOS | 14 Sonoma or later |
 | Hardware | any Mac. A notched display uses the real notch; every other screen gets a drawn one |
-| Swift | 6.0 toolchain: Xcode 16+, or its Command Line Tools |
-| `jq` | used by the hook installer and the status line — `brew install jq` |
+| Homebrew | for the install below. Not needed if you build from source |
+| Swift | 6.0 toolchain (Xcode 16+, or its Command Line Tools) — **only** to build from source |
+| `jq` | used by the hook installer and the status line. Homebrew installs it for you |
 | Claude Code | any recent version |
 | Python + Pillow | *only* to regenerate the app icon; the built icon is committed |
 
@@ -20,26 +21,68 @@ see [How much signing you need](#how-much-signing-you-need).
 ## Install
 
 ```sh
+brew install CircleHP/notchling/notchling
+notchling-hooks setup
+```
+
+Nothing compiles: the formula pours a prebuilt universal bundle, so no Xcode and no toolchain. Nothing
+is downloaded through a browser either, which is what attaches the quarantine attribute that makes
+macOS demand a notarized app — so there is no Gatekeeper dialog and no certificate to buy.
+
+Name the formula in full. Homebrew trusts a third-party tap when you name it in full, so a bare
+`brew install notchling` after tapping is refused.
+
+`notchling-hooks setup` asks three questions and acts on the answers: wire the Claude Code hooks, add
+the plan-usage status line, start the widget now and at login. Each is available on its own —
+`notchling-hooks install`, `notchling-hooks statusline`, `brew services start notchling` — and
+`notchling-hooks` with no arguments prints what it can do.
+
+Then restart any Claude sessions that were already running so they pick up the hooks. They still
+*appear* immediately, they just won't report fine-grained state until restarted.
+
+### Hooks from a plugin instead
+
+The hooks can come from a Claude Code plugin, in which case nothing edits `~/.claude/settings.json` at
+all, and removing the plugin removes the wiring. Inside Claude Code:
+
+```
+/plugin marketplace add CircleHP/notchling
+/plugin install notchling@circlehp
+```
+
+Use one route or the other, never both: plugin hooks merge with the ones in `settings.json`, so two
+copies report every event twice. `notchling-hooks setup` detects that and offers to undo it. The status
+line stays with `notchling-hooks` either way, because plugins cannot register one.
+
+### From source
+
+For contributors, and for anyone who would rather not run a binary they did not compile:
+
+```sh
+brew install --HEAD CircleHP/notchling/notchling
+```
+
+or from a clone, which builds, signs, installs to `~/Applications`, wires the hooks and launches it in
+one step:
+
+```sh
 git clone https://github.com/CircleHP/notchling.git
 cd notchling
 make install
+make statusline    # optional: plan-usage bars, see the trade-off below
+make autostart     # optional: start at login
 ```
 
-That builds, signs, installs to `~/Applications`, wires the Claude Code hooks and launches the app.
-Then restart any Claude sessions that were already running so they pick up the hooks — they'll still
-*appear* immediately, they just won't report fine-grained state until restarted.
+### What the install writes
 
-Two optional extras:
+Whichever route, the only file outside its own install directory that Notchling touches is
+`~/.claude/settings.json`. It backs it up first, **appends** to the existing per-event hook arrays
+rather than replacing them (so other tools' hooks survive), verifies the result is valid JSON with
+exactly one entry per event, and refuses to touch a settings file it cannot parse.
 
-```sh
-make statusline    # plan-usage bars + per-session context (has a visible trade-off, see below)
-make autostart     # start at login and stay running
-```
-
-`make install` edits exactly one file that isn't ours, `~/.claude/settings.json`. It backs it up first,
-**appends** to the existing per-event hook arrays rather than replacing them (so other tools' hooks
-survive), verifies the result is valid JSON with exactly one entry per event, and refuses to touch a
-settings file it can't parse.
+The Homebrew formula itself never touches that file: a package manager rewriting another tool's
+configuration would be invisible and undone by nothing on uninstall, which is why `setup` is a separate
+command that asks.
 
 ## Reading the widget
 
@@ -71,7 +114,8 @@ open rather than while you hover — a list reflowing under the pointer is worse
 
 ## Plan usage and per-session context
 
-Both are behind `make statusline`, and here's the honest trade-off: `rate_limits.*` and
+Both are behind `notchling-hooks statusline` (or `make statusline` from a clone), and here's the
+honest trade-off: `rate_limits.*` and
 `context_window.*` are handed to Claude Code's **status line** and to nothing else — no hook payload
 carries them and nothing under `~/.claude` caches them. So reading them means registering a status
 line, and **configuring any status line makes Claude Code stop showing some of its footer hints**
@@ -83,12 +127,12 @@ Since a row is being spent either way, the script prints something worth it:
 Opus 5  my-project  ctx 37%  5h [████······] 57% left ⟳ 2h10m  7d 88%
 ```
 
-`make no-statusline` removes it. The installer refuses to overwrite a status line it didn't write, and
+`notchling-hooks no-statusline` removes it. The installer refuses to overwrite a status line it didn't write, and
 the remover refuses to delete one — so both are safe to run if you already have your own.
 
-**This needs a session restart, and `make install` does not do it for you.** Claude Code reads
-`statusLine` at session start, exactly as it reads hooks, so running `make statusline` from inside a live
-session does nothing for that session however long you wait. Restart it; `~/.notchling/usage.json` appears
+**This needs a session restart, and nothing does it for you.** Claude Code reads `statusLine` at
+session start, exactly as it reads hooks, so adding it from inside a live session does nothing for that
+session however long you wait. Restart it; `~/.notchling/usage.json` appears
 the first time a restarted session renders its status line, and the bars are drawn in the **expanded
 panel** rather than on the compact strip, so open the notch to see them.
 
@@ -143,7 +187,8 @@ defaults write local.notchling displayMode -string all      # all (default) | ac
 defaults write local.notchling externalScale -string large  # normal (default) | large
 ```
 
-Then restart the app (`make install`, or quit it from the panel and reopen).
+Then restart the app: `brew services restart notchling`, `make restart` from a clone, or quit it
+from the panel and reopen.
 
 What to expect:
 
@@ -173,6 +218,9 @@ What to expect:
 ## Building and signing
 
 ### The targets
+
+These are for a source checkout. A Homebrew install has `notchling-hooks` for the wiring,
+`brew services start|stop notchling` for running it, and `notchling-sessions` for the session list.
 
 ```sh
 make build       # swift build -c release
@@ -238,26 +286,40 @@ reliably clears it.
 | `~/.notchling/events/` | the hook spool. Written by `notchling-hook`, drained and deleted by the app. |
 | `~/.notchling/usage.json` | plan limits, written by the status line. |
 | `~/.notchling/sessions/` | per-session context and model. Pruned after 3 days. |
-| `~/Applications/Notchling.app` | the app. |
+| `$(brew --prefix)/opt/notchling/Notchling.app` | the app, installed by Homebrew. Version-independent path. |
+| `$(brew --prefix)/bin/notchling-hook`, `-hooks`, `-sessions` | the helpers, on `PATH`. Repointed by every upgrade. |
+| `~/Library/LaunchAgents/homebrew.mxcl.notchling.plist` | only with `brew services start notchling`. |
+| `~/Applications/Notchling.app` | the app, if you installed from a clone instead. |
 | `~/Library/LaunchAgents/local.notchling.plist` | only with `make autostart`. |
 | `~/.claude/sessions/` | **read only** — Claude Code's own registry. |
 
 ## Uninstall
 
+Unwire the hooks first, while the command that knows how to still exists:
+
 ```sh
-make uninstall
+notchling-hooks uninstall
+notchling-hooks no-statusline
+brew services stop notchling
+brew uninstall notchling
+brew untap CircleHP/notchling
 ```
 
-Removes the app, unwires its hooks, removes its status line if it installed one, removes the launch
-agent, and deletes `~/.notchling`. The `settings.json` backups are left behind deliberately.
+`uninstall` removes only the entries it installed, and `no-statusline` refuses to remove a status line
+it did not write, so both are safe alongside other tools. Homebrew does not delete `~/.notchling`, so
+remove it by hand if you want the session state gone too. The `settings.json` backups are left behind
+deliberately.
+
+From a clone, `make uninstall` does all of the above for that install, including deleting
+`~/.notchling`.
 
 ## Troubleshooting
 
 **A session shows only `idle`/`working`, never `needs you`** — its hooks aren't wired. Hooks are read
 at session start, so restart that session. Check with `jq '.hooks.PreToolUse' ~/.claude/settings.json`.
 
-**Subagents don't appear** — the same cause. `SubagentStart` and `SubagentStop` are registered by
-`make install`; a session started before that was run reports nothing about its agents.
+**Subagents don't appear** — the same cause. `SubagentStart` and `SubagentStop` are registered when the
+hooks are wired; a session started before that reports nothing about its agents.
 
 **Nothing in the notch at all** — `pgrep -x Notchling`. On a Mac without a notch this is expected:
 the widget only appears on hover or on a state change.
@@ -269,12 +331,12 @@ independent, so if the panel opens and you hear nothing, it's the audio side.
 changes each reinstall and the permission grant stops matching. See
 [How much signing you need](#how-much-signing-you-need).
 
-**A row I don't recognise** — `make sessions` cross-checks the registry against live process argv and
+**A row I don't recognise** — `notchling-sessions` (or `make sessions` from a clone) cross-checks the registry against live process argv and
 says what each entry actually is, including Claude Code's own pooled background processes (which the
 widget hides).
 
-**Usage bars missing** — four checks, in order. `make install` deliberately does not wire the status
-line, so run `make statusline` first. Then **restart your sessions**: `statusLine` is read at session
+**Usage bars missing** — four checks, in order. The status line is opt-in, so run
+`notchling-hooks statusline` first, or answer yes when `notchling-hooks setup` asks. Then **restart your sessions**: `statusLine` is read at session
 start, and a session that was already running will never pick it up however long you wait. Confirm it
 landed with `jq '.statusLine.command' ~/.claude/settings.json`. Finally check that
 `~/.notchling/usage.json` exists — if it does and the panel still looks bare, the bars are in the
