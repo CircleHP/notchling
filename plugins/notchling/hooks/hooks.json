@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart":       [{ "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/notchling-hook-shim" }] }],
+    "UserPromptSubmit":   [{ "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/notchling-hook-shim" }] }],
+    "PreToolUse":         [{ "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/notchling-hook-shim" }] }],
+    "Notification":       [{ "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/notchling-hook-shim" }] }],
+    "SubagentStart":      [{ "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/notchling-hook-shim" }] }],
+    "SubagentStop":       [{ "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/notchling-hook-shim" }] }],
+    "Stop":               [{ "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/notchling-hook-shim" }] }],
+    "StopFailure":        [{ "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/notchling-hook-shim" }] }],
+    "PostToolUseFailure": [{ "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/notchling-hook-shim" }] }],
+    "SessionEnd":         [{ "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/notchling-hook-shim" }] }]
+  }
+}

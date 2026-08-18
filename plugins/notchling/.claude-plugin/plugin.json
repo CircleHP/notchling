@@ -1,0 +1,12 @@
+{
+  "name": "notchling",
+  "description": "Reports session state to the Notchling notch widget",
+  "version": "1.0.0",
+  "author": {
+    "name": "CircleHP",
+    "url": "https://github.com/CircleHP"
+  },
+  "homepage": "https://github.com/CircleHP/notchling",
+  "license": "MIT",
+  "keywords": ["macos", "notch", "widget", "sessions", "status"]
+}

@@ -1,0 +1,27 @@
+#!/bin/sh
+#
+# Hands a hook event to the notchling-hook binary the app installed.
+#
+# The plugin ships no binary, so it resolves one at call time rather than recording a path: a
+# recorded path would point into Homebrew's versioned Cellar directory, which `brew upgrade` moves,
+# and every hook would silently stop firing. PATH comes first because both Homebrew prefixes put
+# their `bin` there, and it is the entry that keeps pointing at the current version.
+#
+# Exits 0 when nothing is found. A widget that is not installed — or has been uninstalled while its
+# plugin is still enabled — must not be able to fail a session's hooks.
+
+if command -v notchling-hook >/dev/null 2>&1; then
+  exec notchling-hook "$@"
+fi
+
+for candidate in \
+  /opt/homebrew/bin/notchling-hook \
+  /usr/local/bin/notchling-hook \
+  "$HOME/Applications/Notchling.app/Contents/MacOS/notchling-hook"
+do
+  if [ -x "$candidate" ]; then
+    exec "$candidate" "$@"
+  fi
+done
+
+exit 0

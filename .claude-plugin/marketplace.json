@@ -1,0 +1,15 @@
+{
+  "name": "circlehp",
+  "description": "Plugins from CircleHP",
+  "owner": {
+    "name": "CircleHP",
+    "url": "https://github.com/CircleHP"
+  },
+  "plugins": [
+    {
+      "name": "notchling",
+      "source": "./plugins/notchling",
+      "description": "Reports session state to the Notchling notch widget"
+    }
+  ]
+}
