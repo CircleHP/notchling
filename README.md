@@ -68,34 +68,67 @@ It sends nothing anywhere. No network calls, no telemetry, no reading of transcr
 ## Install
 
 ```sh
+brew install CircleHP/notchling/notchling
+notchling-hooks setup
+```
+
+`setup` asks before it changes anything: it wires the Claude Code hooks, offers the plan-usage status
+line, and starts the widget now and at login. Then restart any Claude sessions that were already
+running, so they pick up the hooks.
+
+Nothing is compiled — the formula installs a prebuilt universal bundle, so no Xcode and no toolchain.
+Nothing is downloaded through a browser either, which is what would attach the quarantine attribute
+that makes macOS demand a notarized app, so there is no Gatekeeper dialog, no Apple certificate to buy
+and nothing to notarize.
+
+Use the full `CircleHP/notchling/notchling` name rather than tapping first: Homebrew trusts a
+third-party tap when you name it in full, and a bare `brew install notchling` will be refused.
+
+### Hooks from a plugin instead
+
+The hooks can come from a Claude Code plugin, in which case nothing edits `~/.claude/settings.json` at
+all and removing the plugin removes the wiring. Inside Claude Code:
+
+```
+/plugin marketplace add CircleHP/notchling
+/plugin install notchling@circlehp
+```
+
+Use one route or the other, never both — plugin hooks merge with the ones in `settings.json`, so two
+copies report every event twice. `notchling-hooks setup` notices if that has happened and offers to
+undo it.
+
+### Building it yourself
+
+For contributors, and for anyone who would rather not run a binary they did not compile:
+
+```sh
+brew install --HEAD CircleHP/notchling/notchling
+```
+
+or from a clone, which also wires the hooks and launches the app in one step:
+
+```sh
 git clone https://github.com/CircleHP/notchling.git
 cd notchling
 make install
 ```
 
-Then restart any Claude sessions that were already running, so they pick up the hooks.
+Either needs macOS 14+, a Swift 6 toolchain (Xcode 16+ or its Command Line Tools) and `jq`.
 
-Needs macOS 14+, a Swift 6 toolchain (Xcode 16+ or its Command Line Tools), and `jq`.
+### What it does to your machine
 
-The build signs the app itself, so there is no Apple certificate to buy and nothing to notarize — you
-compiled it, so macOS does not gate it. Two things follow from that, both one-time: the first jump into
-**iTerm2 or Terminal.app** makes macOS ask for permission to control them, and because a self-signed
-build's identity changes each rebuild, it asks again after a reinstall. Adding a free Apple Development
-certificate makes the grant stick — [SETUP.md](SETUP.md#how-much-signing-you-need) has the three
-steps. **Warp needs none of this**: that jump is a URL, not AppleScript.
+Whichever route, the only file outside its own install directory that Notchling touches is
+`~/.claude/settings.json`, it backs that up first, and it **appends** to the existing hook arrays so
+other tools' hooks survive. The Homebrew formula never touches it: a package manager rewriting another
+tool's configuration would be invisible and undone by nothing, which is why `setup` is a separate
+command that asks.
 
-Two optional extras:
-
-```sh
-make statusline    # plan-usage bars + per-session context
-make autostart     # start at login
-```
-
-`make statusline` also needs a session restart to take effect, and draws its bars in the expanded panel
-rather than the compact strip — [SETUP.md](SETUP.md#plan-usage-and-per-session-context) has the why.
-
-`make install` edits exactly one file that isn't ours — `~/.claude/settings.json` — backs it up first, and
-**appends** to the existing hook arrays so other tools' hooks survive.
+The app signs itself ad-hoc, which is free and requires no Apple account. One consequence, and only for
+people using the **iTerm2 or Terminal.app** jump: macOS asks permission to control them the first time,
+and asks again after an upgrade, because an ad-hoc signature's identity changes with every build. A free
+Apple Development certificate makes the grant stick — [SETUP.md](SETUP.md#how-much-signing-you-need) has
+the three steps. **Warp needs none of this**: that jump is a URL, not AppleScript.
 
 Full setup, preferences, terminal compatibility and troubleshooting: **[SETUP.md](SETUP.md)**.
 
