@@ -6,6 +6,7 @@
 # an event's array instead of appending to it would silently break them.
 #
 # Usage, with the path optional in every mode — see "Path resolution" below:
+#   ./install-hooks.sh setup                                  interactive; asks about all of the below
 #   ./install-hooks.sh install       [/path/to/notchling-hook]
 #   ./install-hooks.sh uninstall     [/path/to/notchling-hook]
 #   ./install-hooks.sh statusline    [/path/to/statusline-usage.sh]
@@ -86,6 +87,113 @@ resolve_statusline() {
 
   return 1
 }
+
+# --- Setup ------------------------------------------------------------------------------------
+#
+# One command to run after installing, because the alternative is a package manager printing three
+# decisions and two routes and hoping they are read. It asks rather than assumes: a package manager
+# may not edit ~/.claude/settings.json on someone's behalf, and neither may this without being told.
+
+confirm() {
+  question=$1
+  default=$2
+  if [ "$default" = "y" ]; then prompt="[Y/n]"; else prompt="[y/N]"; fi
+  printf '%s %s ' "$question" "$prompt"
+  read -r reply || reply=""
+  case "$reply" in
+    "")    [ "$default" = "y" ] ;;
+    [Yy]*) true ;;
+    *)     false ;;
+  esac
+}
+
+# Hooks from the plugin and hooks in settings.json merge rather than replace, so wiring both reports
+# every event twice. Ask Claude Code rather than guessing from files on disk: a marketplace that was
+# added but never installed from looks identical to an installed plugin in the directory tree.
+plugin_provides_hooks() {
+  command -v claude >/dev/null 2>&1 || return 1
+  claude plugin list </dev/null 2>/dev/null | grep -qi notchling
+}
+
+wired_command() {
+  [ -f "$SETTINGS" ] || return 1
+  found=$(jq -r '[.hooks // {} | to_entries[] | .value[]?.hooks[]?.command]
+                 | map(select(endswith("notchling-hook"))) | first // ""' "$SETTINGS" 2>/dev/null)
+  [ -n "$found" ] || return 1
+  printf '%s\n' "$found"
+}
+
+if [ "$MODE" = "setup" ]; then
+  # Nothing here may block waiting for an answer that cannot arrive.
+  if [ ! -t 0 ]; then
+    printf 'install-hooks: setup needs a terminal. Run these instead:\n'
+    printf '  notchling-hooks install\n  notchling-hooks statusline   # optional\n'
+    exit 0
+  fi
+
+  hook=$(resolve_hook) || die "could not find notchling-hook — install the app first"
+  printf 'Notchling setup\n\n'
+
+  # 1. Hooks. Without these the widget sees sessions but never learns what they are doing.
+  if plugin_provides_hooks; then
+    printf '  hooks       provided by the Notchling plugin\n'
+    if existing=$(wired_command); then
+      printf '\nThe plugin and %s are both wired, so every event is reported twice.\n' "$existing"
+      if confirm "Remove the settings.json copy and keep the plugin?" y; then
+        "$0" uninstall "$existing"
+      fi
+    fi
+  elif existing=$(wired_command); then
+    if [ "$existing" = "$hook" ]; then
+      printf '  hooks       already wired to %s\n' "$existing"
+    else
+      printf '  hooks       wired to %s, which is not the copy just installed\n' "$existing"
+      if confirm "Re-point them at $hook?" y; then
+        "$0" uninstall "$existing" >/dev/null
+        "$0" install "$hook"
+      fi
+    fi
+  else
+    printf 'The widget needs Claude Code hooks to see what a session is doing. Wiring them appends to\n'
+    printf '%s, backing it up first and leaving other tools alone.\n\n' "$SETTINGS"
+    if confirm "Wire them?" y; then
+      "$0" install "$hook"
+    fi
+  fi
+
+  # 2. Status line. Separate because it costs something visible.
+  printf '\n'
+  current=$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null || echo "")
+  case "$current" in
+    *statusline-usage.sh) printf '  status line already configured\n' ;;
+    "")
+      printf 'The status line adds plan-usage bars and per-session context, and makes Claude Code drop\n'
+      printf 'some of its own footer hints.\n\n'
+      if confirm "Add it?" n; then
+        "$0" statusline
+      fi
+      ;;
+    *) printf '  status line left alone: %s is configured\n' "$current" ;;
+  esac
+
+  # 3. Running. Only offered where it can be honoured; a source install has `make autostart`.
+  printf '\n'
+  case "$hook" in
+    "$(brew_prefix 2>/dev/null)"/*)
+      if brew services list </dev/null 2>/dev/null | grep -q "^notchling *started"; then
+        printf '  already running, and set to start at login\n'
+      elif confirm "Start Notchling now, and at login?" y; then
+        brew services start notchling
+      fi
+      ;;
+    *)
+      printf '  start it with `make autostart`, or open the app\n'
+      ;;
+  esac
+
+  printf '\nRestart any Claude sessions that were already running — hooks are read at session start.\n'
+  exit 0
+fi
 
 # --- Status line -----------------------------------------------------------------------------
 #
@@ -192,7 +300,7 @@ elif [ "$MODE" = "uninstall" ]; then
     end
   '
 else
-  die "unknown mode: $MODE (expected install, uninstall, statusline or no-statusline)"
+  die "unknown mode: $MODE (expected setup, install, uninstall, statusline or no-statusline)"
 fi
 
 TMP=$(mktemp "$SETTINGS.notchling.XXXXXX")
