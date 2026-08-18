@@ -1,0 +1,81 @@
+name: Release
+
+# A tag builds and publishes. A manual run builds and uploads the artifact without publishing, so
+# the whole path can be exercised before there is a tag to get wrong.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Publishing a release writes to the repository; nothing else here does.
+permissions:
+  contents: write
+
+# Never cancel a run that might be halfway through publishing.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: build and publish
+    # Not the matrix CI uses: Xcode 16.4 / Swift 6.1.2 cannot link a universal binary. See the note
+    # on CI's dist step. Building against a newer SDK is safe because Swift checks availability
+    # against the deployment target, which Package.swift pins to macOS 14.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      # Recorded so a release that misbehaves can be tied to the toolchain that built it.
+      - name: Toolchain
+        run: |
+          sw_vers
+          swift --version
+          xcodebuild -version
+
+      # A release ships a binary nobody compiled themselves, so it runs the suite rather than
+      # trusting that the commit was green when it landed on main.
+      - name: Test
+        run: make test
+
+      - name: Assert the hook binary was built, so no test skipped itself
+        run: test -x .build/debug/notchling-hook
+
+      # The tag, the app's version and the plugin's version all have to agree: a formula's url
+      # embeds the tag, `make dist` names the tarball from the plist, and the plugin's version is
+      # what tells an installed copy to update. A mismatch is only discoverable once it is public.
+      - name: Assert the versions agree
+        run: |
+          plist=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+          plugin=$(jq -r .version plugins/notchling/.claude-plugin/plugin.json)
+          echo "plist=$plist plugin=$plugin ref=$GITHUB_REF_NAME type=$GITHUB_REF_TYPE"
+          test "$plist" = "$plugin"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then test "v$plist" = "$GITHUB_REF_NAME"; fi
+
+      # `make dist` verifies its own output: both architectures, the macOS 14 floor, the archive
+      # layout a formula expects, a signature that survives unpacking, and a matching checksum.
+      - name: Build the tarball
+        run: make dist SIGN_ID=
+
+      # Uploaded on every run, including manual ones. That is what makes a dispatch a real dry run
+      # rather than a rehearsal of the first half.
+      - name: Upload the artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: notchling-dist
+          path: .build/dist/*
+          if-no-files-found: error
+
+      # The checksum file ships beside the tarball so the formula's sha256 can be taken from the
+      # release rather than recomputed by hand — but verify it against the download anyway.
+      - name: Publish
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+          gh release create "$GITHUB_REF_NAME" \
+            ".build/dist/notchling-$version-universal.tar.gz" \
+            ".build/dist/notchling-$version-universal.tar.gz.sha256" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
