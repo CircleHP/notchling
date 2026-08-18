@@ -2,43 +2,37 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleName</key>
-	<string>Notchling</string>
 	<key>CFBundleDisplayName</key>
 	<string>Notchling</string>
 	<key>CFBundleExecutable</key>
 	<string>Notchling</string>
-	<key>CFBundleIdentifier</key>
-	<string>local.notchling</string>
-	<!-- Both keys on purpose: IconFile is the classic bundle icon, IconName is what newer macOS
-	     UI looks for first. -->
 	<key>CFBundleIconFile</key>
 	<string>Notchling</string>
 	<key>CFBundleIconName</key>
 	<string>Notchling</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.notchling</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Notchling</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.2</string>
+	<string>1.0.3</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
-	<!-- Accessory app: no Dock icon, no menu bar, no windows. Kept even though main() also calls
-	     setActivationPolicy(.accessory), so launchd starts never flash a Dock tile. -->
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Notchling focuses the terminal tab that owns a Claude Code session.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSSupportsAutomaticTermination</key>
 	<false/>
 	<key>NSSupportsSuddenTermination</key>
 	<false/>
-	<!-- Needed for the iTerm2 / Terminal.app focus fallbacks. Warp needs no permission,
-	     because focusing it is a URL open rather than an AppleScript command. -->
-	<key>NSAppleEventsUsageDescription</key>
-	<string>Notchling focuses the terminal tab that owns a Claude Code session.</string>
 </dict>
 </plist>
