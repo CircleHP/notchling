@@ -91,6 +91,9 @@ make statusline    # plan-usage bars + per-session context
 make autostart     # start at login
 ```
 
+`make statusline` also needs a session restart to take effect, and draws its bars in the expanded panel
+rather than the compact strip — [SETUP.md](SETUP.md#plan-usage-and-per-session-context) has the why.
+
 `make install` edits exactly one file that isn't ours — `~/.claude/settings.json` — backs it up first, and
 **appends** to the existing hook arrays so other tools' hooks survive.
 

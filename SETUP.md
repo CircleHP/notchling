@@ -86,6 +86,12 @@ Opus 5  my-project  ctx 37%  5h [████······] 57% left ⟳ 2h10m  7
 `make no-statusline` removes it. The installer refuses to overwrite a status line it didn't write, and
 the remover refuses to delete one — so both are safe to run if you already have your own.
 
+**This needs a session restart, and `make install` does not do it for you.** Claude Code reads
+`statusLine` at session start, exactly as it reads hooks, so running `make statusline` from inside a live
+session does nothing for that session however long you wait. Restart it; `~/.notchling/usage.json` appears
+the first time a restarted session renders its status line, and the bars are drawn in the **expanded
+panel** rather than on the compact strip, so open the notch to see them.
+
 Because a status line only runs while its session is on screen, these numbers go stale when nothing is
 running. The panel dims them and says so rather than presenting old numbers as current.
 
@@ -267,4 +273,9 @@ changes each reinstall and the permission grant stops matching. See
 says what each entry actually is, including Claude Code's own pooled background processes (which the
 widget hides).
 
-**Usage bars missing** — run `make statusline`, then wait for a session to render its status line once.
+**Usage bars missing** — four checks, in order. `make install` deliberately does not wire the status
+line, so run `make statusline` first. Then **restart your sessions**: `statusLine` is read at session
+start, and a session that was already running will never pick it up however long you wait. Confirm it
+landed with `jq '.statusLine.command' ~/.claude/settings.json`. Finally check that
+`~/.notchling/usage.json` exists — if it does and the panel still looks bare, the bars are in the
+expanded panel only, so open the notch rather than reading the compact strip.
