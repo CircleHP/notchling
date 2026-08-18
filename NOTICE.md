@@ -1,0 +1,27 @@
+# Notices
+
+## Not affiliated with Anthropic
+
+Notchling is an unofficial, third-party tool. It is not made by, endorsed by,
+or affiliated with Anthropic. "Claude" and "Claude Code" are trademarks of
+Anthropic, PBC, used here only to describe what the tool observes.
+
+It reads Claude Code's own on-disk session registry and receives its hook events.
+It sends nothing anywhere: no network calls, no telemetry, no transcript reading.
+Everything it writes lives under `~/.notchling/`.
+
+The mascot is this project's own creature, not Anthropic's logo or mark.
+
+## The art is original
+
+Every pixel of the mascot — the walking critter, the alert bar-and-dot, the tick,
+their colours and their frame timings — is original to this project and MIT
+licensed along with the rest of the code. It lives as ASCII rows in
+`Sources/Notchling/UI/Mascot/MascotArt.swift`, where `#` is a lit pixel, and
+`make-icon.py` renders the same grid into the app icon so the two cannot drift.
+
+## Third-party code
+
+None. Notchling has no package dependencies — the notch surface, the window and the shape are all in
+`Sources/Notchling/UI`. An earlier version drew its notch with DynamicNotchKit (MIT), with thanks; the
+current implementation is original.

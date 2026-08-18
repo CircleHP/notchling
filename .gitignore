@@ -1,0 +1,17 @@
+# Swift Package Manager
+/.build/
+/.swiftpm/
+*.dSYM/
+
+# Python (make-icon.py)
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Local scratch
+/*.log
+
+# Working notes, not part of the published repo.
+/docs/
