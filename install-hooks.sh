@@ -42,6 +42,7 @@ command -v jq >/dev/null 2>&1 || die "jq is required"
 # makes Claude Code drop some of its footer hints.
 if [ "$MODE" = "statusline" ] || [ "$MODE" = "no-statusline" ]; then
   SETTINGS_BACKUP="$SETTINGS.notchling-backup-$(date +%Y%m%d%H%M%S)"
+  mkdir -p "$(dirname "$SETTINGS")"
   [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
   jq empty "$SETTINGS" 2>/dev/null || die "$SETTINGS is not valid JSON — not touching it"
   cp "$SETTINGS" "$SETTINGS_BACKUP"
