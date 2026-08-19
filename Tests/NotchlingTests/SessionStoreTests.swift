@@ -103,13 +103,58 @@ struct SessionStoreHookTests {
         #expect(s.lastProgressAt == nil, "a finished turn cannot be stalled")
     }
 
-    @Test("failures land in the error state", arguments: ["StopFailure", "PostToolUseFailure"])
-    func failures(event: String) {
+    @Test("a failed turn lands in the error state")
+    func turnFailure() {
         let store = SessionStore()
-        store.apply(hookEvent(event, ["errorMessage": "boom"]))
+        store.apply(hookEvent("StopFailure", ["errorMessage": "boom"]))
         let s = try! #require(store.sessions.first)
         #expect(s.state == .error)
         #expect(s.lastMessage == "boom")
+    }
+
+    /// Claude retries a failed tool and usually recovers, so alerting on one trains the user to ignore
+    /// the alert that matters. It has to stay visible without becoming notifiable.
+    @Test("a failed tool call is visible but never notifiable")
+    func toolFailureDoesNotAlert() {
+        let store = SessionStore()
+        store.apply(hookEvent("UserPromptSubmit"))
+        store.apply(hookEvent("PreToolUse", ["toolName": "Bash"]))
+        store.apply(hookEvent("PostToolUseFailure", ["errorMessage": "exit 1"]))
+
+        let s = try! #require(store.sessions.first)
+        #expect(s.state == .working, "the turn is still going")
+        #expect(s.state.isNotifiable == false)
+        #expect(s.activityLine() == "exit 1", "the failure is still on the row")
+        #expect(s.lastMessage == nil, "a tool failure is not the session's last word")
+    }
+
+    @Test("the next tool clears the failure off the row")
+    func nextToolClearsTheFailure() {
+        let store = SessionStore()
+        store.apply(hookEvent("UserPromptSubmit"))
+        store.apply(hookEvent("PostToolUseFailure", ["errorMessage": "exit 1"]))
+        store.apply(hookEvent("PreToolUse", ["toolName": "Read"]))
+
+        let s = try! #require(store.sessions.first)
+        #expect(s.lastToolFailure == nil)
+        #expect(s.activityLine() == "Read")
+    }
+
+    /// The recovery path this whole rule exists for: fail, retry, finish. Nothing along it should have
+    /// been notifiable except the finish.
+    @Test("a failure that Claude recovers from ends as a normal finish")
+    func recoveredFailureEndsClean() {
+        let store = SessionStore()
+        store.apply(hookEvent("UserPromptSubmit"))
+        store.apply(hookEvent("PreToolUse", ["toolName": "Bash"]))
+        store.apply(hookEvent("PostToolUseFailure", ["errorMessage": "exit 1"]))
+        store.apply(hookEvent("PreToolUse", ["toolName": "Bash"]))
+        store.apply(hookEvent("Stop", ["lastMessage": "done"]))
+
+        let s = try! #require(store.sessions.first)
+        #expect(s.state == .done)
+        #expect(s.lastToolFailure == nil)
+        #expect(s.activityLine() == "done")
     }
 
     @Test("SessionEnd removes the session outright")
@@ -885,6 +930,22 @@ struct SubagentActivityTests {
         #expect(session.state == .working, "the main thread is still going")
         #expect(session.agents["a1"]?.state == .error)
         #expect(session.agents["a1"]?.activityLine == "agent crashed")
+    }
+
+    /// Same rule one level down: a tool failing inside an agent is not the agent failing, so the row
+    /// must not turn red and nothing must sound.
+    @Test("a failed tool inside an agent leaves the agent working")
+    func agentToolFailureIsNotAgentFailure() {
+        let store = SessionStore()
+        store.apply(hookEvent("UserPromptSubmit"))
+        store.apply(hookEvent("SubagentStart", ["agentId": "a1"]))
+        store.apply(hookEvent("PreToolUse", ["agentId": "a1", "toolName": "Grep"]))
+        store.apply(hookEvent("PostToolUseFailure", ["agentId": "a1", "errorMessage": "no matches"]))
+
+        let session = try! #require(store.sessions.first)
+        #expect(session.agents["a1"]?.state == .working)
+        #expect(session.agents["a1"]?.lastMessage == "no matches")
+        #expect(session.state == .working)
     }
 
     /// The fallback that keeps the routing honest: an event carrying an `agent_id` that we have no
