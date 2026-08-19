@@ -19,7 +19,11 @@ final class HookSpoolWatcher {
     /// then the ones already on disk say everything the next one would.
     nonisolated static let failedCap = 500
 
+    /// How often the set-aside line may repeat. See `setAside(_:)`.
+    nonisolated static let setAsideLogInterval: TimeInterval = 60
+
     private let queue = DispatchQueue(label: "local.notchling.spool", qos: .utility)
+    private var lastSetAsideLog: Date?
     private var watcher: DirectoryWatcher?
     private let onEvents: ([HookEvent]) -> Void
     private let directory: URL
@@ -96,8 +100,29 @@ final class HookSpoolWatcher {
 
         var held = (try? fileManager.contentsOfDirectory(atPath: failed.path))?.count ?? 0
 
+        // Throttled, because the case that produces these produces them continuously: a hook writing
+        // a schema this build does not know sets aside every event it sends. One line a minute is
+        // enough to find out, and enough to stop the log filling with the same sentence.
+        let now = Date.now
+        if lastSetAsideLog.map({ now.timeIntervalSince($0) > Self.setAsideLogInterval }) ?? true {
+            lastSetAsideLog = now
+            Log.spool.error(
+                """
+                \(urls.count, privacy: .public) event(s) could not be read, and were set aside in \
+                \(Self.failedDirectoryName, privacy: .public)/ — a hook writing a schema this \
+                build does not know, or a corrupt file
+                """
+            )
+        }
+
+        var reportedFull = false
+
         for url in urls {
             guard held < Self.failedCap else {
+                if !reportedFull {
+                    reportedFull = true
+                    Log.spool.error("the set-aside directory is full; the rest are being dropped")
+                }
                 try? fileManager.removeItem(at: url)
                 continue
             }

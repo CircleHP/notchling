@@ -79,6 +79,9 @@ enum UsageReader {
         .appendingPathComponent(".notchling")
         .appendingPathComponent("usage")
 
+    /// Usage files that did not decode last time, so each is reported once. See `readAll(in:)`.
+    private static var unreadable: Set<String> = []
+
     nonisolated static let path = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent(".notchling")
         .appendingPathComponent("usage.json")
@@ -101,11 +104,26 @@ enum UsageReader {
         let decoder = JSONDecoder()
         var readings: [UsageReading] = []
 
+        // Once per file, not once per sweep: this is read every two seconds, and a status line
+        // whose output has changed shape would otherwise repeat itself all day.
+        var stillUnreadable: Set<String> = []
+
         for name in names where name.hasSuffix(".json") && !name.hasPrefix(".") {
             guard let data = try? Data(contentsOf: dir.appendingPathComponent(name)),
                   let file = try? decoder.decode(UsageFile.self, from: data),
                   file.v == 1
-            else { continue }
+            else {
+                stillUnreadable.insert(name)
+                if !unreadable.contains(name) {
+                    Log.usage.error(
+                        """
+                        usage/\(name, privacy: .public) is not readable as a usage file — the status \
+                        line's output may have changed, and the plan bars will stop moving
+                        """
+                    )
+                }
+                continue
+            }
 
             let reading = UsageReading(
                 fiveHour: window(file.fiveHourUsedPercent, file.fiveHourResetsAt),
@@ -114,6 +132,8 @@ enum UsageReader {
             )
             if reading.fiveHour != nil || reading.sevenDay != nil { readings.append(reading) }
         }
+
+        unreadable = stillUnreadable
         return readings
     }
 

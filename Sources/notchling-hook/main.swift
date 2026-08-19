@@ -11,6 +11,12 @@
 //
 
 import Foundation
+import os
+
+/// The only channel this binary may complain on. stdout belongs to Claude Code, which acts on it,
+/// and stderr is shown to the user — so a spool it cannot write to is otherwise silent, which is the
+/// one failure worth knowing about. Same subsystem as the app; see `Log.swift` there.
+let log = Logger(subsystem: "local.notchling", category: "hook")
 
 let schemaVersion = 1
 let spoolCap = 500
@@ -234,6 +240,8 @@ do {
     try payload.write(to: temporary, options: .atomic)
     try fileManager.moveItem(at: temporary, to: final)
 } catch {
+    // Read-only spool, or a full disk. The widget goes quiet from here and nothing else says why.
+    log.error("could not write to the spool: \((error as NSError).code, privacy: .public)")
     try? fileManager.removeItem(at: temporary)
 }
 
