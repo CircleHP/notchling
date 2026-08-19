@@ -49,7 +49,10 @@ final class TranscriptReader {
 
     /// Reads off the main thread and answers on it. Does nothing when the file has not changed since
     /// the last read, or when a read for the same session is already running.
-    func read(sessionID: String, path: String, completion: @escaping (TranscriptMarks) -> Void) {
+    /// The callback is `@MainActor` because that is where it runs, and `@Sendable` because it
+    /// travels through the queue to get there — the two together are what say "handed over, then
+    /// called at home" rather than "called wherever it lands".
+    func read(sessionID: String, path: String, completion: @escaping @MainActor @Sendable (TranscriptMarks) -> Void) {
         guard !inFlight.contains(sessionID) else { return }
         let attributes = try? FileManager.default.attributesOfItem(atPath: path)
         guard let modified = attributes?[.modificationDate] as? Date else { return }
