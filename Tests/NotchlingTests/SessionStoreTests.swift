@@ -157,6 +157,46 @@ struct SessionStoreHookTests {
         #expect(s.activityLine() == "done")
     }
 
+    /// macOS reuses pids. A pid left behind in `resolvedPIDs` blocks the identity probe for whatever
+    /// session is given that number next, and that session then has no tty and no focus URL — the row
+    /// still appears, the click just quietly stops working.
+    @Test("a session leaving takes its pid with it, so a reused pid can be probed again")
+    func removalPurgesThePID() {
+        let store = SessionStore()
+        store.apply(registry: [registryEntry(session: "a", pid: 4242)])
+        #expect(store.resolvedPIDs.contains(4242), "the first session claimed the pid")
+
+        // Absent from the registry and not alive: gone.
+        store.apply(registry: [])
+        #expect(store.sessions.isEmpty)
+        #expect(store.resolvedPIDs.isEmpty, "the pid must not outlive the session that held it")
+
+        store.apply(registry: [registryEntry(session: "b", pid: 4242)])
+        #expect(store.resolvedPIDs.contains(4242), "the next owner of the pid gets its own probe")
+    }
+
+    /// The pid is claimed on the registry path — that is where the identity probe lives — but a session
+    /// can leave by either route, so `SessionEnd` has to release it too.
+    @Test("SessionEnd also releases the pid")
+    func sessionEndPurgesThePID() {
+        let store = SessionStore()
+        store.apply(registry: [registryEntry(session: "a", pid: 4242)])
+        #expect(store.resolvedPIDs.contains(4242))
+        store.apply(hookEvent("SessionEnd", session: "a"))
+        #expect(store.sessions.isEmpty)
+        #expect(store.resolvedPIDs.isEmpty)
+    }
+
+    @Test("removal is announced, so state held elsewhere can be dropped")
+    func removalIsAnnounced() {
+        let store = SessionStore()
+        var removed: [String] = []
+        store.onRemoved = { removed.append($0.sessionID) }
+        store.apply(hookEvent("SessionStart", session: "gone"))
+        store.apply(hookEvent("SessionEnd", session: "gone"))
+        #expect(removed == ["gone"])
+    }
+
     @Test("SessionEnd removes the session outright")
     func sessionEndRemoves() {
         let store = SessionStore()

@@ -69,6 +69,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // Otherwise every session the widget has ever seen keeps an entry, and a recycled session id
+        // would inherit the previous one's dedupe state.
+        store.onRemoved = { [weak self] session in
+            self?.cues.clearDedupe(for: session.sessionID)
+        }
+
         store.onStalled = { [weak self] session in
             guard let self else { return }
             self.cues.playStalled(for: session)
