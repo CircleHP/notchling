@@ -81,3 +81,41 @@ jobs:
       - name: Dist tarball
         if: matrix.os == 'macos-26'
         run: make dist SIGN_ID=
+
+  # Advisory. The package builds in Swift 5 language mode, and these are the diagnostics
+  # it would have to answer before that moves — so warnings are reported, not enforced.
+  # What it buys today is a standing list: the DirectoryWatcher race was found by reading
+  # the file, and this is what makes the next one arrive as a diff instead of a bug report.
+  #
+  # An error still fails the job. A hard isolation error means the tree no longer compiles
+  # under the rules the language is moving to, which is worth knowing on the commit that
+  # introduces it rather than on the day the mode changes.
+  #
+  # One runner, not the matrix: the diagnostics come from the compiler, not the OS, and
+  # macos-26 carries the newer of the two toolchains — the one that sees more.
+  concurrency-checking:
+    name: strict concurrency
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Build with complete concurrency checking
+        run: |
+          set -o pipefail
+          swift build -Xswiftc -strict-concurrency=complete 2>&1 | tee strict.log
+
+      - name: Report
+        if: always()
+        run: |
+          # Deduplicated: a file compiled into more than one module reports the same
+          # diagnostic once per module, and a raw count reads as several times the problem.
+          diagnostics=$(grep -E '^/.*(warning|error):' strict.log \
+            | sed -E 's#^.*/notchling/##' | sort -u || true)
+          {
+            printf '## Strict concurrency\n\n'
+            printf '%s diagnostics.\n\n' "$(printf '%s' "$diagnostics" | grep -c . || true)"
+            printf '```\n%s\n```\n' "$diagnostics"
+          } >> "$GITHUB_STEP_SUMMARY"
