@@ -197,6 +197,27 @@ struct HookBinaryTests {
         #expect(message.hasSuffix("…"))
     }
 
+    /// Captured from a real `PostToolUseFailure`, which carries `error` and no `error_message` — the
+    /// same class of bug as the `prompt` mapping above, and just as silent: the row says `failed` and
+    /// never says why. `error_message` stays supported because `StopFailure` is an API-error event we
+    /// cannot trigger on demand to capture.
+    @Test("the failure reason is read from the key Claude actually sends",
+          arguments: ["error", "error_message"])
+    func failureReason(key: String) throws {
+        let home = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        try runHook([
+            "hook_event_name": "PostToolUseFailure",
+            "session_id": "s1",
+            "tool_name": "Bash",
+            key: "Exit code 3",
+        ], home: home)
+
+        let event = try #require(spooledEvents(home: home).first)
+        #expect(event["errorMessage"] as? String == "Exit code 3")
+    }
+
     @Test("newlines are flattened, so a row stays one line")
     func flattensNewlines() throws {
         let home = makeTempDirectory()
