@@ -150,7 +150,11 @@ put("lastMessage", truncated(string("last_assistant_message"), to: maxMessageLen
 put("userInput", truncated(string("prompt") ?? string("user_input"), to: maxMessageLength))
 put("source", string("source"))
 put("reason", string("reason"))
-put("errorMessage", truncated(string("error_message"), to: maxMessageLength))
+// `PostToolUseFailure` calls this `error` — captured from a real payload, which carries
+// `{"error": "Exit code 3", …}` and no `error_message` at all. `error_message` is kept as a fallback
+// because `StopFailure` is an API-error event we cannot trigger on demand to check. Reading only the
+// wrong key fails silently: the row shows `failed` and never says why.
+put("errorMessage", truncated(string("error") ?? string("error_message"), to: maxMessageLength))
 
 put("pid", resolveClaudePID().map { Int($0) })
 put("focusURL", environment["WARP_FOCUS_URL"])

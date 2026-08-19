@@ -66,6 +66,10 @@ struct Session: Identifiable, Equatable, ToolTracking {
     var turnStartedAt: Date?
     var lastMessage: String?
     var needsYouMessage: String?
+    /// The last tool call that failed mid-turn. Kept separate from `lastMessage` because it must be
+    /// visible without being notifiable: Claude retries and usually recovers, so a failing tool is
+    /// progress, not an event anyone needs to be told about. Cleared when the next tool starts.
+    var lastToolFailure: String?
     /// When this session last actually *finished* a turn. Not `stateChangedAt`, which for a settled
     /// session is when it went idle — twenty seconds after the fact. Cleared when a new turn starts, so a
     /// session that drifts to idle without finishing does not resurface an old one.
@@ -171,7 +175,9 @@ struct Session: Identifiable, Equatable, ToolTracking {
             // While agents are out, the main thread is orchestrating, not running the tool the row would
             // otherwise name. `Task · 3/5 done` describes what is happening; `Task` on its own does not.
             if let agentSummary { return agentSummary }
-            guard let currentTool else { return nil }
+            // Between a failed tool and whatever Claude tries next there is nothing else to say, and
+            // saying nothing would hide the failure entirely.
+            guard let currentTool else { return lastToolFailure }
             if let summary = currentToolSummary, summary != currentTool {
                 return "\(currentTool) · \(summary)"
             }

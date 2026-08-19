@@ -131,6 +131,7 @@ final class SessionStore {
             case "SessionStart":
                 newState = .idle
                 session.turnStartedAt = nil
+                session.lastToolFailure = nil
                 session.agents.removeAll()
                 session.toolCounts = [:]
                 session.currentTool = nil
@@ -139,6 +140,7 @@ final class SessionStore {
             case "UserPromptSubmit":
                 newState = .working
                 session.turnStartedAt = event.date
+                session.lastToolFailure = nil
                 session.agents.removeAll()
                 session.toolCounts = [:]
                 session.currentTool = nil
@@ -155,6 +157,7 @@ final class SessionStore {
             case "PreToolUse":
                 newState = .working
                 session.needsYouMessage = nil
+                session.lastToolFailure = nil
                 // A new tool starting is proof the previous one finished, which is the only completion signal
                 // there is — `PostToolUse` stays unregistered because its payload can be megabytes.
                 session.recordCurrentToolDuration(endingAt: event.date)
@@ -190,10 +193,22 @@ final class SessionStore {
                 session.currentToolSummary = nil
                 session.needsYouMessage = nil
 
-            case "StopFailure", "PostToolUseFailure":
+            case "StopFailure":
                 newState = .error
                 session.lastMessage = event.errorMessage ?? session.lastMessage
                 session.currentTool = nil
+                session.lastToolFailure = nil
+
+            // Deliberately not `.error`: a tool call failing is routine, Claude retries and usually
+            // recovers, and alerting every time trains the user to ignore the alert that matters. The
+            // failure stays on the row until the next tool starts; if Claude cannot recover, the turn
+            // ends and `StopFailure` raises it then.
+            case "PostToolUseFailure":
+                session.lastToolFailure = event.errorMessage ?? "tool failed"
+                session.currentTool = nil
+                session.currentToolSummary = nil
+                session.lastProgressAt = event.date
+                session.isStalled = false
 
             case "SessionEnd":
                 index.removeValue(forKey: event.sessionId)
@@ -286,13 +301,22 @@ final class SessionStore {
             session.lastProgressAt = event.date
             session.isStalled = false
 
-        case "StopFailure", "PostToolUseFailure":
+        case "StopFailure":
             agent.state = .error
             agent.finishedAt = event.date
             agent.lastMessage = event.errorMessage ?? agent.lastMessage
             agent.currentTool = nil
             // Left off the session on purpose: an agent failing is something the main thread is handed
             // back and often recovers from, so it is not the session failing.
+
+        // As above: a failed tool call is not a failed agent. The message is kept so the row can show
+        // what went wrong, but the agent stays working and nothing turns red.
+        case "PostToolUseFailure":
+            agent.lastMessage = event.errorMessage ?? agent.lastMessage
+            agent.currentTool = nil
+            agent.currentToolSummary = nil
+            session.lastProgressAt = event.date
+            session.isStalled = false
 
         default:
             return false
