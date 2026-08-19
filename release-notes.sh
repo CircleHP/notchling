@@ -18,7 +18,17 @@ TAG="${1:?tag required}"
 PREVIOUS="${2:-}"
 
 # GITHUB_REPOSITORY in CI, the remote everywhere else, so the links are right when run by hand.
+#
+# Validated rather than trusted: an SSH host alias, a mirror or a non-GitHub remote all produce
+# something that is not `owner/name`, and a link built from it would be wrong in a way nobody checks.
+# Without one the notes still read correctly, they just carry plain numbers instead of links.
 REPO="${GITHUB_REPOSITORY:-$(git config --get remote.origin.url | sed -E 's#^.*github\.com[:/]##; s#\.git$##')}"
+case "$REPO" in
+  */*/*)              REPO="" ;;  # more than one slash: not owner/name
+  *[!A-Za-z0-9._/-]*) REPO="" ;;  # a character no owner or repository name contains
+  ?*/?*)                       ;;
+  *)                  REPO="" ;;
+esac
 
 # The tag before this one, and failing that the whole history — which is what the first release
 # after adding this wants anyway.
@@ -57,7 +67,13 @@ while IFS= read -r subject; do
   line="- "
   if [ -n "$scope" ]; then line+="**$scope** — "; fi
   line+="$text"
-  if [ -n "$pr" ]; then line+=" ([#$pr](https://github.com/$REPO/pull/$pr))"; fi
+  if [ -n "$pr" ]; then
+    if [ -n "$REPO" ]; then
+      line+=" ([#$pr](https://github.com/$REPO/pull/$pr))"
+    else
+      line+=" (#$pr)"
+    fi
+  fi
 
   # `feat!:` — the marker for a change that can break an existing install. Listed first and on its
   # own, whatever kind of change it otherwise is, because it is the one thing an upgrade needs read.
@@ -99,6 +115,6 @@ if [ "$total" -eq 0 ]; then
   printf 'Maintenance only — no change to what the app does.\n\n'
 fi
 
-if [ -n "$PREVIOUS" ]; then
+if [ -n "$PREVIOUS" ] && [ -n "$REPO" ]; then
   printf '**Full changelog**: https://github.com/%s/compare/%s...%s\n' "$REPO" "$PREVIOUS" "$TAG"
 fi

@@ -29,12 +29,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// and a session whose process died without a `SessionEnd`.
     private static let sweepInterval: TimeInterval = 2
 
+    /// How often the leftovers of ended sessions are cleared out. Doing it only at launch left a
+    /// widget that runs for weeks — which is the intended way to run it — accumulating a file per
+    /// session for ever.
+    private static let pruneInterval: TimeInterval = 6 * 60 * 60
+
     private let store = SessionStore()
     private let cues = SoundCues()
     private var spool: HookSpoolWatcher?
     private var registry: SessionRegistryReader?
     private var widget: WidgetController?
     private var sweep: Timer?
+    private var lastPrune = Date.now
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !isAlreadyRunning() else {
@@ -43,8 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         loadApplicationIcon()
-        SessionMetricsReader.pruneStaleFiles()
-        UsageReader.pruneStaleFiles()
+        pruneStaleFiles()
 
         let widget = WidgetController(
             store: store,
@@ -107,6 +112,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 self.store.tick()
                 self.registry?.scan()
+
+                if Date.now.timeIntervalSince(self.lastPrune) > Self.pruneInterval {
+                    self.pruneStaleFiles()
+                }
             }
         }
 
@@ -146,6 +155,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         NSApp.terminate(nil)
+    }
+
+    /// The per-session files the status line leaves behind. Both readers only remove what is days
+    /// old, so a live session's files are never in scope.
+    private func pruneStaleFiles() {
+        lastPrune = .now
+        SessionMetricsReader.pruneStaleFiles()
+        UsageReader.pruneStaleFiles()
     }
 
     /// An accessory app has no Dock tile, so AppKit never loads its icon, and system UI that asks

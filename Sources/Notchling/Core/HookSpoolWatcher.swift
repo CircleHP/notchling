@@ -24,6 +24,11 @@ final class HookSpoolWatcher {
 
     private let queue = DispatchQueue(label: "local.notchling.spool", qos: .utility)
     private var lastSetAsideLog: Date?
+
+    /// Files that could not be moved into `failed/`. Skipped on later drains rather than read and
+    /// re-read for the life of the process: the move only fails for a reason that will not clear by
+    /// itself, and the hook's own prune removes them by age.
+    private var unmovable: Set<String> = []
     private var watcher: DirectoryWatcher?
     private let onEvents: ([HookEvent]) -> Void
     private let directory: URL
@@ -58,8 +63,11 @@ final class HookSpoolWatcher {
         guard let names = try? fileManager.contentsOfDirectory(atPath: directory.path) else { return }
 
         let files = names
-            .filter { $0.hasSuffix(".json") && !$0.hasPrefix(".") }
+            .filter { $0.hasSuffix(".json") && !$0.hasPrefix(".") && !unmovable.contains($0) }
             .sorted()
+
+        // Anything gone from the directory can stop being remembered.
+        unmovable.formIntersection(names)
 
         guard !files.isEmpty else { return }
 
@@ -130,8 +138,9 @@ final class HookSpoolWatcher {
                 try fileManager.moveItem(at: url, to: failed.appendingPathComponent(url.lastPathComponent))
                 held += 1
             } catch {
-                // Left in the spool rather than deleted, and tried again on the next drain. The hook
-                // prunes it by age eventually, which is the right outcome if the move never works.
+                // Left in the spool rather than deleted, and not looked at again. The hook prunes it
+                // by age eventually, which is the right outcome if the move never works.
+                unmovable.insert(url.lastPathComponent)
             }
         }
     }

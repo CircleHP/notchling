@@ -79,7 +79,9 @@ enum UsageReader {
         .appendingPathComponent(".notchling")
         .appendingPathComponent("usage")
 
-    /// Usage files that did not decode last time, so each is reported once. See `readAll(in:)`.
+    /// Usage files that did not decode last time, so each is reported once. Keyed by full path
+    /// rather than file name: this is process-wide state, and two directories holding a `1.json`
+    /// each — which is every test that uses a scratch directory — would otherwise share an entry.
     private static var unreadable: Set<String> = []
 
     nonisolated static let path = URL(fileURLWithPath: NSHomeDirectory())
@@ -113,8 +115,9 @@ enum UsageReader {
                   let file = try? decoder.decode(UsageFile.self, from: data),
                   file.v == 1
             else {
-                stillUnreadable.insert(name)
-                if !unreadable.contains(name) {
+                let key = dir.appendingPathComponent(name).path
+                stillUnreadable.insert(key)
+                if !unreadable.contains(key) {
                     Log.usage.error(
                         """
                         usage/\(name, privacy: .public) is not readable as a usage file — the status \
