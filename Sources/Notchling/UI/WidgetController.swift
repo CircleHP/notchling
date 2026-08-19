@@ -13,6 +13,7 @@ import SwiftUI
 final class WidgetController {
     private let store: SessionStore
     private let onQuit: () -> Void
+    private let onRestart: () -> Void
     private let displayMode: DisplayMode
 
     private var presenters: [WidgetPresenter] = []
@@ -25,10 +26,16 @@ final class WidgetController {
     private var lastHoveredDisplayID: CGDirectDisplayID?
     private var screenObserver: NSObjectProtocol?
 
-    init(store: SessionStore, displayMode: DisplayMode = .current, onQuit: @escaping () -> Void) {
+    init(
+        store: SessionStore,
+        displayMode: DisplayMode = .current,
+        onQuit: @escaping () -> Void,
+        onRestart: @escaping () -> Void
+    ) {
         self.store = store
         self.displayMode = displayMode
         self.onQuit = onQuit
+        self.onRestart = onRestart
     }
 
     func start() {
@@ -159,7 +166,8 @@ final class WidgetController {
                     store: store,
                     onHoverChange: { [weak self] in self?.hoverChanged() },
                     onFocus: { TerminalFocus.focus($0) },
-                    onQuit: onQuit
+                    onQuit: onQuit,
+                    onRestart: onRestart
                 )
             )
         }

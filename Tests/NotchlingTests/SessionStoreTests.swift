@@ -506,6 +506,39 @@ struct SessionStoreRegistryTests {
         #expect(store.sessions.isEmpty, "a pid can be recycled, so absence eventually wins")
     }
 
+    @Test("the build on disk is checked on a slow interval, not on every sweep")
+    func pendingVersionIsThrottled() {
+        let clock = TestClock()
+        var reads = 0
+        var answer: String? = nil
+        let store = SessionStore(now: clock.now, pendingVersion: {
+            reads += 1
+            return answer
+        })
+
+        store.tick()
+        #expect(reads == 1)
+        #expect(store.pendingVersion == nil)
+
+        // Releases are rare and the newest is the stable one, so the interval is hours rather than
+        // seconds — a whole day of sweeps inside it must not produce a second read.
+        clock.advance(SessionStore.versionCheckInterval - 1)
+        store.tick()
+        #expect(reads == 1, "still inside the interval")
+
+        answer = "1.0.4"
+        clock.advance(SessionStore.versionCheckInterval + 1)
+        store.tick()
+        #expect(reads == 2)
+        #expect(store.pendingVersion == "1.0.4")
+
+        // And it clears again, so a widget restarted into the new build stops nagging.
+        answer = nil
+        clock.advance(SessionStore.versionCheckInterval + 1)
+        store.tick()
+        #expect(store.pendingVersion == nil)
+    }
+
     @Test("a session with no pid gets the grace period, not an immediate drop")
     func missingPIDGrace() {
         let clock = TestClock()

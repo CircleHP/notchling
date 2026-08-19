@@ -20,6 +20,7 @@ final class WidgetPresenter {
     private let onHoverChange: () -> Void
     private let onFocus: (Session) -> Void
     private let onQuit: () -> Void
+    private let onRestart: () -> Void
 
     private var panel: WidgetPanel?
     private var state: WidgetViewState
@@ -34,13 +35,15 @@ final class WidgetPresenter {
         store: SessionStore,
         onHoverChange: @escaping () -> Void,
         onFocus: @escaping (Session) -> Void,
-        onQuit: @escaping () -> Void
+        onQuit: @escaping () -> Void,
+        onRestart: @escaping () -> Void
     ) {
         self.displayID = screen.displayID
         self.store = store
         self.onHoverChange = onHoverChange
         self.onFocus = onFocus
         self.onQuit = onQuit
+        self.onRestart = onRestart
         self.state = WidgetViewState(metrics: WidgetMetrics(screen: screen))
     }
 
@@ -143,7 +146,8 @@ final class WidgetPresenter {
                 self?.contentGeometryChanged(presentation, geometry)
             },
             onFocus: onFocus,
-            onQuit: onQuit
+            onQuit: onQuit,
+            onRestart: onRestart
         )
 
         let panel = WidgetPanel(
