@@ -1,0 +1,29 @@
+name: Feature request
+description: Something the widget should do and does not
+labels: ["feature"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What should exist
+      description: One or two lines.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: What it costs to leave alone
+      description: |
+        What you do today instead, or what you miss because it is not there. This is the part that
+        decides whether it gets built.
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: The observable thing that would have to be true to close this.
+    validations:
+      required: true

@@ -1,0 +1,75 @@
+name: Bug report
+description: Something the widget does wrong, or stopped doing
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If the widget has gone quiet rather than misbehaved, the log and `notchling-sessions` are
+        usually the whole diagnosis — there are fields for both below.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce it
+      description: |
+        The sequence that produces it. "Two sessions, one finishes while the panel is open" is more
+        useful than a list of everything you had running.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: How much it gets in the way
+      options:
+        - "Blocks using the widget at all"
+        - "Wrong or missing information, but usable"
+        - "Cosmetic"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Notchling version
+      description: "`brew list --versions notchling`, or the tag you built from."
+      placeholder: "1.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS and terminal
+      description: "`sw_vers -productVersion`, and which terminal the session runs in."
+      placeholder: "15.6, Warp"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: |
+        ```sh
+        log show --predicate 'subsystem == "local.notchling"' --last 1h
+        ```
+        `log` is a zsh builtin — use `/usr/bin/log` if your shell swallows it. Paths and prompts are
+        redacted by the system; what appears is the contract that broke.
+      render: text
+
+  - type: textarea
+    id: sessions
+    attributes:
+      label: notchling-sessions output
+      description: Only if a row is wrong, missing, or one you do not recognise.
+      render: text

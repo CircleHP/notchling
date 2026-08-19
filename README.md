@@ -173,14 +173,9 @@ at the top reports the state of `main` — so what a clone gets you is whatever 
 
 ## Contributing
 
-Pull requests welcome, especially:
-
-- **iTerm2 and Terminal.app focus** — implemented, and confirmation from a real setup would be welcome.
-- Terminals not in the compatibility table.
-- Anything that breaks against a new Claude Code version.
-
-Run `make test` before opening a PR — 204 tests, no network or fixtures required. `make test` rather than
-`swift test`: the tests that drive the hook binary end to end skip themselves if it has not been built.
+Pull requests welcome — **[CONTRIBUTING.md](.github/CONTRIBUTING.md)** has what to run before opening
+one, and why the title of a pull request matters more here than in most repos: merges are squash-only,
+so it becomes both the commit and the line in the release notes.
 
 The code carries its reasoning in comments — the constraints that are easy to break by accident are
 written down next to the code that depends on them.
