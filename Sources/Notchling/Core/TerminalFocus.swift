@@ -72,9 +72,19 @@ enum TerminalFocus {
 
     private static func runAppleScript(_ source: String) {
         // NSAppleScript rather than `osascript`: no subprocess, and no shell quoting to get wrong.
-        guard let script = NSAppleScript(source: source) else { return }
+        guard let script = NSAppleScript(source: source) else {
+            Log.focus.error("AppleScript would not compile")
+            return
+        }
         var error: NSDictionary?
         script.executeAndReturnError(&error)
+
+        // The usual one is -1743: the user has not granted this app permission to send events to
+        // the terminal, which looks exactly like a click that did nothing.
+        guard let error else { return }
+        let code = (error[NSAppleScript.errorNumber] as? Int) ?? 0
+        let message = (error[NSAppleScript.errorMessage] as? String) ?? "no message"
+        Log.focus.error("focus failed: \(code, privacy: .public) \(message, privacy: .public)")
     }
 
     private static func iTermScript(tty: String) -> String {
