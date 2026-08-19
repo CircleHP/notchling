@@ -119,7 +119,12 @@ func processName(of pid: Int32) -> String? {
     }
 }
 
-var out: [String: Any] = [
+// `nonisolated(unsafe)` on the two globals the helpers below touch. Under complete concurrency
+// checking a global declared in `main.swift` is inferred main-actor isolated while the top-level
+// statements around it are not, so the file cannot reach its own state without one side saying
+// which it is. Unsafe in name only here: this binary reads stdin, writes one file and exits, on a
+// single thread throughout.
+nonisolated(unsafe) var out: [String: Any] = [
     "v": schemaVersion,
     "ts": Date().timeIntervalSince1970,
     "event": event,
@@ -169,7 +174,7 @@ let spoolDirectory = URL(fileURLWithPath: NSHomeDirectory())
     .appendingPathComponent(".notchling")
     .appendingPathComponent("events")
 
-let fileManager = FileManager.default
+nonisolated(unsafe) let fileManager = FileManager.default
 try? fileManager.createDirectory(
     at: spoolDirectory,
     withIntermediateDirectories: true,
