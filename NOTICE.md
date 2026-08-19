@@ -7,7 +7,9 @@ or affiliated with Anthropic. "Claude" and "Claude Code" are trademarks of
 Anthropic, PBC, used here only to describe what the tool observes.
 
 It reads Claude Code's own on-disk session registry and receives its hook events.
-It sends nothing anywhere: no network calls, no telemetry, no transcript reading.
+It sends nothing anywhere: no network calls and no telemetry. It reads two entries from a session's
+own transcript — the title Claude derives, and a colour set with `/color` — because they are recorded
+nowhere else; that is a local file read and nothing leaves the machine.
 Everything it writes lives under `~/.notchling/`.
 
 The mascot is this project's own creature, not Anthropic's logo or mark.

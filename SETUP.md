@@ -107,6 +107,15 @@ for a stalled turn. Each fires once per edge.
 for the current turn, and a context meter. Hover a row for its working directory, the task it was given,
 and whether focus will be precise. Click it to jump there.
 
+The **name** is the one you chose if you set one; otherwise the title Claude derives from the
+conversation — the same title `claude --resume` lists — falling back to the registry's slug while a
+session is too young to have either. Background jobs keep their own name, which is already the task's
+title.
+
+A session given a colour with **`/color`** carries it as a bar down the left edge of its row. A bar
+rather than a dot beside the state dot: both palettes contain red, green and yellow, so a coloured dot
+next to a state dot reads as a second state. Position is what keeps the two apart.
+
 **Subagent rows** are indented under the session that spawned them, with their own tool, elapsed time and
 result. A session that fans out shows `3/5 done` instead of a tool name, because the tool a fan-out's main
 thread is running is always the one that spawned the agents. Agents appearing or finishing show on the next
@@ -284,7 +293,9 @@ reliably clears it.
 |---|---|
 | `~/.claude/settings.json` | hook entries, plus an optional status line. Backed up on every change. |
 | `~/.notchling/events/` | the hook spool. Written by `notchling-hook`, drained and deleted by the app. |
-| `~/.notchling/usage.json` | plan limits, written by the status line. |
+| `~/.notchling/events/failed/` | events the app could not read, kept rather than deleted. Normally empty — see below. |
+| `~/.notchling/usage/` | plan limits, one file per session. Pruned after 3 days. |
+| `~/.notchling/usage.json` | plan limits, last writer wins. Kept for a widget from before `usage/` existed. |
 | `~/.notchling/sessions/` | per-session context and model. Pruned after 3 days. |
 | `$(brew --prefix)/opt/notchling/Notchling.app` | the app, installed by Homebrew. Version-independent path. |
 | `$(brew --prefix)/bin/notchling-hook`, `-hooks`, `-sessions` | the helpers, on `PATH`. Repointed by every upgrade. |
@@ -331,6 +342,22 @@ independent, so if the panel opens and you hear nothing, it's the audio side.
 changes each reinstall and the permission grant stops matching. See
 [How much signing you need](#how-much-signing-you-need).
 
+**Anything at all, when nothing above fits** — the app says what it could not do, and where:
+
+```sh
+log show --predicate 'subsystem == "local.notchling"' --last 1h
+```
+
+`log` is a zsh builtin, so use `/usr/bin/log` if your shell swallows it. A working widget logs nothing,
+so anything at all here is the answer: an AppleScript error behind a click that did nothing, a registry
+file that no longer decodes, a spool it could not write to. Paths and prompts are redacted by the
+system; what appears is the contract that broke, which is what makes the output safe to paste into an
+issue.
+
+**The widget is running but sees nothing** — check `~/.notchling/events/failed/`. Events the app cannot
+read are moved there rather than deleted, which is what an upgrade looks like when a newer hook writes a
+format the running app predates. Restarting the widget is the fix; the directory is the evidence.
+
 **A row I don't recognise** — `notchling-sessions` (or `make sessions` from a clone) cross-checks the registry against live process argv and
 says what each entry actually is, including Claude Code's own pooled background processes (which the
 widget hides).
@@ -339,5 +366,10 @@ widget hides).
 `notchling-hooks statusline` first, or answer yes when `notchling-hooks setup` asks. Then **restart your sessions**: `statusLine` is read at session
 start, and a session that was already running will never pick it up however long you wait. Confirm it
 landed with `jq '.statusLine.command' ~/.claude/settings.json`. Finally check that
-`~/.notchling/usage.json` exists — if it does and the panel still looks bare, the bars are in the
+`~/.notchling/usage/` has a file in it — if it does and the panel still looks bare, the bars are in the
 expanded panel only, so open the notch rather than reading the compact strip.
+
+The numbers are account-wide, so they should read the same whichever session is on screen. Each session
+writes its own file and the app decides between them by content rather than by who wrote last: usage
+only accumulates inside a window, so the higher reading is the later one, and a reset time further ahead
+means the window rolled over.
