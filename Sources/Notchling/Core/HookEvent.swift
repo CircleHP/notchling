@@ -5,6 +5,11 @@
 import Foundation
 
 struct HookEvent: Decodable {
+    /// The spool format this build understands, matching `schemaVersion` in `notchling-hook`. An
+    /// event carrying anything else was written by a hook from a different install — see
+    /// `HookSpoolWatcher.setAside(_:)` for what happens to it.
+    static let schemaVersion = 1
+
     var v: Int
     var ts: Double
     var event: String

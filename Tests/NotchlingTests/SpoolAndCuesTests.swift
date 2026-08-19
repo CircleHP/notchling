@@ -78,36 +78,82 @@ struct HookSpoolWatcherTests {
         #expect(received == ["SessionStart", "UserPromptSubmit", "Stop"])
     }
 
-    @Test("every file is deleted, including ones that could not be decoded")
-    func alwaysDeletes() {
+    @Test("a file that cannot be read leaves the spool, but is set aside rather than deleted")
+    func setsAsideWhatItCannotRead() {
         let dir = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
 
         writeEvent("001-good.json", #"{"v":1,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
         writeEvent("002-broken.json", "{{{", in: dir)
+        // What an upgrade produces: the new hook is already writing a schema this build predates.
+        writeEvent("003-newer.json", #"{"v":2,"ts":2,"event":"Stop","sessionId":"s"}"#, in: dir)
 
         var received: [String] = []
         let watcher = HookSpoolWatcher(directory: dir) { received = $0.map(\.event) }
         watcher.drain()
 
-        #expect(received == ["Stop"], "the broken file is skipped")
-        let left = try! FileManager.default.contentsOfDirectory(atPath: dir.path)
-        #expect(left.isEmpty, "a file that cannot be decoded must still be removed, or it blocks forever")
+        #expect(received == ["Stop"], "only the event this build understands is applied")
+
+        let left = Set(try! FileManager.default.contentsOfDirectory(atPath: dir.path))
+        #expect(left == ["failed"], "nothing readable stays in the spool, or it is applied twice")
+
+        let failed = dir.appendingPathComponent("failed")
+        let setAside = Set(try! FileManager.default.contentsOfDirectory(atPath: failed.path))
+        #expect(setAside == ["002-broken.json", "003-newer.json"],
+                "deleting these would take the widget silent with nothing left to explain why")
     }
 
-    @Test("wrong-version and partial files are ignored")
+    @Test("draining again does not re-read what was set aside")
+    func setAsideIsNotDrainedAgain() {
+        let dir = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        writeEvent("001-newer.json", #"{"v":2,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
+
+        var calls = 0
+        let watcher = HookSpoolWatcher(directory: dir) { _ in calls += 1 }
+        watcher.drain()
+        watcher.drain()
+
+        #expect(calls == 0)
+        let failed = dir.appendingPathComponent("failed")
+        #expect(try! FileManager.default.contentsOfDirectory(atPath: failed.path) == ["001-newer.json"])
+    }
+
+    @Test("the set-aside directory is bounded, so a build that understands nothing cannot fill the disk")
+    func setAsideIsBounded() {
+        let dir = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let failed = dir.appendingPathComponent("failed")
+        try! FileManager.default.createDirectory(at: failed, withIntermediateDirectories: true)
+        for index in 0 ..< HookSpoolWatcher.failedCap {
+            writeEvent(String(format: "%04d-old.json", index), "{}", in: failed)
+        }
+
+        writeEvent("999-newer.json", #"{"v":2,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
+
+        let watcher = HookSpoolWatcher(directory: dir) { _ in }
+        watcher.drain()
+
+        let left = Set(try! FileManager.default.contentsOfDirectory(atPath: dir.path))
+        #expect(left == ["failed"], "past the cap it is dropped rather than left to be retried forever")
+        let held = try! FileManager.default.contentsOfDirectory(atPath: failed.path)
+        #expect(held.count == HookSpoolWatcher.failedCap)
+    }
+
+    @Test("partial and non-event files are left alone")
     func ignoresOtherFiles() {
         let dir = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        writeEvent("001.json", #"{"v":9,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
         writeEvent(".002.json.tmp", #"{"v":1,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
         writeEvent("003.txt", #"{"v":1,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
 
         var called = false
         let watcher = HookSpoolWatcher(directory: dir) { _ in called = true }
         watcher.drain()
-        #expect(!called, "nothing here is a v1 .json event")
+        #expect(!called, "nothing here is an event file the drain should touch")
 
         // The in-progress temp file and the non-json file must survive.
         let left = Set(try! FileManager.default.contentsOfDirectory(atPath: dir.path))

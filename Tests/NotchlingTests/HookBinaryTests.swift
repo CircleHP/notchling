@@ -292,6 +292,55 @@ struct HookBinaryTests {
         #expect(permissions.int16Value == 0o700, "hook payloads can quote prompts, so keep them private")
     }
 
+    @Test("the spool is capped even when every event is newer than the age cutoff")
+    func prunesToTheCapWhenNothingIsOldEnough() throws {
+        let home = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let fileManager = FileManager.default
+        let dir = home.appendingPathComponent(".notchling/events")
+        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        // Over the cap, and all written just now — a busy session produces one of these per tool
+        // call, so ten minutes of work is well past 500 without a single file old enough to expire.
+        for index in 0 ..< 600 {
+            let name = String(format: "%015d-%@.json", index, UUID().uuidString)
+            try Data("{}".utf8).write(to: dir.appendingPathComponent(name))
+        }
+
+        // Neither of these is an event file, and both are older than the cutoff: the prune must
+        // leave them alone. `failed/` is the app's, and deleting it would take the directory and
+        // everything set aside in it; the `.tmp` belongs to a hook that is still writing, and
+        // removing it makes that hook lose its event at the rename.
+        let failed = dir.appendingPathComponent("failed")
+        try fileManager.createDirectory(at: failed, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: failed.appendingPathComponent("001-kept.json"))
+        let temporary = dir.appendingPathComponent(".in-flight.json.tmp")
+        try Data("{}".utf8).write(to: temporary)
+        let ancient = Date(timeIntervalSince1970: 1)
+        for url in [failed, temporary] {
+            try fileManager.setAttributes([.modificationDate: ancient], ofItemAtPath: url.path)
+        }
+
+        // The prune is sampled one run in 32, so this drives the hook until it fires. Expected to
+        // take ~32 runs; the bound is only here so a prune that never happens fails the test
+        // instead of hanging.
+        var remaining = 600
+        for _ in 0 ..< 400 {
+            try runHook(["hook_event_name": "Stop", "session_id": "s1"], home: home)
+            remaining = try fileManager.contentsOfDirectory(atPath: dir.path)
+                .filter { $0.hasSuffix(".json") && !$0.hasPrefix(".") }.count
+            if remaining < 600 { break }
+        }
+
+        // 600 seeded, pruned to one under the cap, plus the event the pruning run then wrote.
+        #expect(remaining == 500, "a spool of fresh events must still be capped")
+        #expect(fileManager.fileExists(atPath: failed.appendingPathComponent("001-kept.json").path),
+                "the prune must not reach into failed/")
+        #expect(fileManager.fileExists(atPath: temporary.path),
+                "a half-written file belongs to another hook")
+    }
+
     @Test("no partial files are left behind")
     func noTempFilesLeft() throws {
         let home = makeTempDirectory()

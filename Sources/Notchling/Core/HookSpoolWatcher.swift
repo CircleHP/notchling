@@ -10,6 +10,15 @@ final class HookSpoolWatcher {
         .appendingPathComponent(".notchling")
         .appendingPathComponent("events")
 
+    /// Where unreadable events are kept. A subdirectory of the spool, so it travels with it and is
+    /// found by anyone looking at why the widget went quiet. Safe to keep in there because both the
+    /// drain and the hook's prune act on `.json` files alone.
+    nonisolated static let failedDirectoryName = "failed"
+
+    /// How many unreadable events are kept. Reached only when the app cannot read *anything*, and by
+    /// then the ones already on disk say everything the next one would.
+    nonisolated static let failedCap = 500
+
     private let queue = DispatchQueue(label: "local.notchling.spool", qos: .utility)
     private var watcher: DirectoryWatcher?
     private let onEvents: ([HookEvent]) -> Void
@@ -34,7 +43,8 @@ final class HookSpoolWatcher {
         watcher = nil
     }
 
-    /// Read, decode and delete every event file, oldest first.
+    /// Read, decode and delete every event file, oldest first, setting aside any this build cannot
+    /// read.
     ///
     /// Filenames are millisecond-prefixed, so a lexicographic sort is chronological. That matters:
     /// these events drive a state machine, and applying them out of order leaves a session showing
@@ -50,18 +60,54 @@ final class HookSpoolWatcher {
         guard !files.isEmpty else { return }
 
         var events: [HookEvent] = []
+        var unreadable: [URL] = []
         let decoder = JSONDecoder()
 
         for name in files {
             let url = directory.appendingPathComponent(name)
-            defer { try? fileManager.removeItem(at: url) }
-            guard let data = try? Data(contentsOf: url) else { continue }
-            guard let event = try? decoder.decode(HookEvent.self, from: data) else { continue }
-            guard event.v == 1 else { continue }
+            guard let data = try? Data(contentsOf: url),
+                  let event = try? decoder.decode(HookEvent.self, from: data),
+                  event.v == HookEvent.schemaVersion
+            else {
+                unreadable.append(url)
+                continue
+            }
+            try? fileManager.removeItem(at: url)
             events.append(event)
         }
 
+        if !unreadable.isEmpty { setAside(unreadable) }
+
         guard !events.isEmpty else { return }
         onEvents(events.sorted { $0.ts < $1.ts })
+    }
+
+    /// Moves events the app could not read out of the spool instead of deleting them.
+    ///
+    /// The case that matters is an upgrade: replacing the files leaves the old app running, so a new
+    /// hook writing a newer schema feeds a build that predates it. Deleting those would take the
+    /// widget silent and destroy the only evidence of why, so they are kept where they can be found.
+    /// Nothing reads them back — the events themselves are gone either way, and replaying them into a
+    /// running app would drive its state machine backwards.
+    private func setAside(_ urls: [URL]) {
+        let fileManager = FileManager.default
+        let failed = directory.appendingPathComponent(Self.failedDirectoryName, isDirectory: true)
+        try? fileManager.createDirectory(at: failed, withIntermediateDirectories: true)
+
+        var held = (try? fileManager.contentsOfDirectory(atPath: failed.path))?.count ?? 0
+
+        for url in urls {
+            guard held < Self.failedCap else {
+                try? fileManager.removeItem(at: url)
+                continue
+            }
+            do {
+                try fileManager.moveItem(at: url, to: failed.appendingPathComponent(url.lastPathComponent))
+                held += 1
+            } catch {
+                // Left in the spool rather than deleted, and tried again on the next drain. The hook
+                // prunes it by age eventually, which is the right outcome if the move never works.
+            }
+        }
     }
 }
