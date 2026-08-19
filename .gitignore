@@ -15,3 +15,6 @@ __pycache__/
 
 # Working notes, not part of the published repo.
 /docs/
+
+# Internal conventions for Claude Code, not part of the published repo.
+/CLAUDE.md
