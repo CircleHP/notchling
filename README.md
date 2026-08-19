@@ -84,6 +84,10 @@ and nothing to notarize.
 Use the full `CircleHP/notchling/notchling` name rather than tapping first: Homebrew trusts a
 third-party tap when you name it in full, and a bare `brew install notchling` will be refused.
 
+Two commands come with it: `notchling-hooks`, which prints what it can do when run with no
+arguments, and `notchling-sessions`, which lists what the widget can see and is the first thing to
+reach for when a row looks wrong.
+
 ### Hooks from a plugin instead
 
 The hooks can come from a Claude Code plugin, in which case nothing edits `~/.claude/settings.json` at
