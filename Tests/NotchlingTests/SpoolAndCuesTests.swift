@@ -142,6 +142,40 @@ struct HookSpoolWatcherTests {
         #expect(held.count == HookSpoolWatcher.failedCap)
     }
 
+    @Test("a file that cannot be set aside is left alone rather than read on every drain")
+    func unmovableFileIsNotRetried() {
+        let dir = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let fileManager = FileManager.default
+        let failed = dir.appendingPathComponent("failed")
+        try! fileManager.createDirectory(at: failed, withIntermediateDirectories: true)
+        // Nothing can be moved in here, so the first drain's move fails the way a permissions change
+        // or a full disk would.
+        try! fileManager.setAttributes([.posixPermissions: 0o500], ofItemAtPath: failed.path)
+        defer { try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: failed.path) }
+
+        writeEvent("001-newer.json", #"{"v":2,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
+
+        let watcher = HookSpoolWatcher(directory: dir) { _ in }
+        watcher.drain()
+        #expect(
+            fileManager.fileExists(atPath: dir.appendingPathComponent("001-newer.json").path),
+            "a move that fails must leave the file rather than lose it"
+        )
+
+        // Opening the directory again is what makes the skip observable: a watcher still retrying
+        // would move the file now, and one that gave up leaves it where it is.
+        try! fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: failed.path)
+        watcher.drain()
+
+        #expect(
+            fileManager.fileExists(atPath: dir.appendingPathComponent("001-newer.json").path),
+            "it is not read again — the hook's own prune is what removes it in the end"
+        )
+        #expect(try! fileManager.contentsOfDirectory(atPath: failed.path).isEmpty)
+    }
+
     @Test("partial and non-event files are left alone")
     func ignoresOtherFiles() {
         let dir = makeTempDirectory()

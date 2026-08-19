@@ -34,6 +34,11 @@ struct ExpandedView: View {
     /// without any explicit invalidation.
     @State private var layout: PanelLayout
 
+    /// Captured when the panel opens, for the same reason the row list is: `WidgetPresenter` refuses
+    /// to resize the window while the panel is open, so a row appearing mid-hover would be drawn
+    /// outside the space the window has. It appears on the next open instead.
+    @State private var pendingVersion: String?
+
     @Environment(\.widgetMetrics) private var metrics
 
     init(
@@ -47,13 +52,14 @@ struct ExpandedView: View {
         self.onQuit = onQuit
         self.onRestart = onRestart
         _layout = State(initialValue: PanelLayout(sessions: store.sessions))
+        _pendingVersion = State(initialValue: store.pendingVersion)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: metrics.size(8)) {
             header
 
-            if let version = store.pendingVersion {
+            if let version = pendingVersion {
                 UpgradeNoticeRow(version: version, onRestart: onRestart)
                     .padding(.horizontal, metrics.size(Self.contentInset))
             }
