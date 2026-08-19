@@ -50,13 +50,17 @@ final class SessionStore {
 
     var onChange: (() -> Void)?
 
+    /// Fired when a session leaves the store, so state held elsewhere and keyed by it can go too.
+    var onRemoved: ((Session) -> Void)?
+
     private var index: [String: Session] = [:]
 
     private let processEnvironment = ProcessEnvironmentReader()
 
     /// pids already looked up, so a session with genuinely no terminal identity is not re-probed on
-    /// every sweep.
-    private var resolvedPIDs: Set<Int32> = []
+    /// every sweep. Purged by `remove(id:)`: a pid that outlives its session blocks identity
+    /// resolution for whatever process macOS gives that number to next.
+    private(set) var resolvedPIDs: Set<Int32> = []
 
     /// Injectable so the time-based arbitration below can be tested without sleeping. Every rule in this
     /// file that compares timestamps has edge cases an hour or a second either side of the obvious case, so
@@ -65,6 +69,23 @@ final class SessionStore {
 
     init(now: @escaping () -> Date = { Date.now }) {
         self.now = now
+    }
+
+    /// The only way a session leaves the store.
+    ///
+    /// Removing it from `index` alone leaves its pid in `resolvedPIDs` and its environment in the
+    /// reader's cache forever. macOS reuses pids, so the next session to be handed that number is
+    /// silently refused a terminal-identity probe: no tty, no focus URL, and a click that falls back
+    /// to activating the app instead of jumping to the tab.
+    @discardableResult
+    private func remove(id: String) -> Session? {
+        guard let session = index.removeValue(forKey: id) else { return nil }
+        if let pid = session.pid {
+            resolvedPIDs.remove(pid)
+            processEnvironment.forget(pid: pid)
+        }
+        onRemoved?(session)
+        return session
     }
 
     /// Current state of one session by id. The panel freezes which rows it draws when it opens but keeps
@@ -211,7 +232,7 @@ final class SessionStore {
                 session.isStalled = false
 
             case "SessionEnd":
-                index.removeValue(forKey: event.sessionId)
+                remove(id: event.sessionId)
                 rebuild()
                 return
 
@@ -444,12 +465,12 @@ final class SessionStore {
         for (id, var session) in index where !seen.contains(id) {
             let alive = session.pid.map(ProcessLiveness.isAlive) ?? false
             guard alive else {
-                index.removeValue(forKey: id)
+                remove(id: id)
                 continue
             }
             if let since = session.missingFromRegistrySince {
                 if stamp.timeIntervalSince(since) > Self.registryGrace {
-                    index.removeValue(forKey: id)
+                    remove(id: id)
                 }
             } else {
                 session.missingFromRegistrySince = stamp
@@ -520,7 +541,7 @@ final class SessionStore {
                 changed = true
             }
             if let pid = session.pid, !ProcessLiveness.isAlive(pid) {
-                index.removeValue(forKey: id)
+                remove(id: id)
                 changed = true
             }
         }

@@ -78,4 +78,23 @@ struct ProcessEnvironmentParseTests {
         // The test runner has a controlling tty only sometimes, so assert on argv, which is always there.
         #expect(found.command?.isEmpty == false, "argv should always come back for our own pid")
     }
+
+    /// The cache is keyed by pid, and macOS reuses pids. Without a way to forget one, the identity of a
+    /// dead process is handed to whatever process inherits its number.
+    @Test("a forgotten pid is read again rather than answered from cache")
+    @MainActor
+    func forgetForcesAReRead() async {
+        let reader = ProcessEnvironmentReader()
+
+        _ = await withCheckedContinuation { continuation in
+            reader.read(pid: livePID) { continuation.resume(returning: $0) }
+        }
+        reader.forget(pid: livePID)
+
+        // A cached answer would short-circuit before `ps` runs; this only completes if it read again.
+        let second: TerminalIdentity? = await withCheckedContinuation { continuation in
+            reader.read(pid: livePID) { continuation.resume(returning: $0) }
+        }
+        #expect(try! #require(second).command?.isEmpty == false)
+    }
 }

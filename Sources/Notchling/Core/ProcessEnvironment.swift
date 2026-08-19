@@ -21,8 +21,13 @@ final class ProcessEnvironmentReader {
     private let queue = DispatchQueue(label: "local.notchling.psenv", qos: .utility)
     private var cache: [Int32: TerminalIdentity] = [:]
     private var inFlight: Set<Int32> = []
+    /// Bumped by `forget`, so a read still running for the *previous* owner of a pid cannot write its
+    /// answer into the cache after the pid has been reused.
+    private var generation: [Int32: Int] = [:]
 
-    /// A process's environment is fixed at exec time, so one read per pid is enough forever.
+    /// A process's environment is fixed at exec time, so one read per pid is enough — for as long as
+    /// that pid means the same process. It stops meaning it when the process dies, which is what
+    /// `forget` is for.
     func read(pid: Int32, completion: @escaping (TerminalIdentity) -> Void) {
         if let cached = cache[pid] {
             completion(cached)
@@ -30,6 +35,7 @@ final class ProcessEnvironmentReader {
         }
         guard !inFlight.contains(pid) else { return }
         inFlight.insert(pid)
+        let readGeneration = generation[pid, default: 0]
 
         queue.async {
             let identity = Self.readSynchronously(pid: pid)
@@ -38,10 +44,19 @@ final class ProcessEnvironmentReader {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.inFlight.remove(pid)
+                guard self.generation[pid, default: 0] == readGeneration else { return }
                 self.cache[pid] = identity
                 completion(identity)
             }
         }
+    }
+
+    /// Drop what is known about a pid, because the process behind it is gone. macOS reuses pids, and a
+    /// cached answer from the previous owner is worse than no answer: it names the wrong terminal.
+    func forget(pid: Int32) {
+        cache.removeValue(forKey: pid)
+        inFlight.remove(pid)
+        generation[pid, default: 0] += 1
     }
 
     // MARK: - Parsing
