@@ -17,7 +17,10 @@ enum NotchlingMain {
         application.run()
     }
 
-    private static var delegate: AppDelegate?
+    /// Written once above, before `run()`, and never read. `nonisolated(unsafe)` because that is
+    /// what it is: one assignment on the main thread during launch, kept alive only because
+    /// `NSApplication` holds its delegate weakly.
+    nonisolated(unsafe) private static var delegate: AppDelegate?
 }
 
 @MainActor

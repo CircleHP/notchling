@@ -238,7 +238,9 @@ private struct WidgetRevealModifier: ViewModifier, Animatable {
     let scaleY: CGFloat
     let anchor: UnitPoint
 
-    var animatableData: CGFloat {
+    /// Nonisolated because SwiftUI reads this while interpolating, which is not promised to be the
+    /// main actor. Nothing here minds: the modifier holds four value types and touches nothing else.
+    nonisolated var animatableData: CGFloat {
         get { progress }
         set { progress = newValue }
     }
