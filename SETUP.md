@@ -87,7 +87,7 @@ command that asks.
 ## Reading the widget
 
 <p align="center">
-  <img src="media/panel.gif" width="560" alt="The expanded panel with three sessions, a subagent subtree, context meters and plan-usage bars">
+  <img src="media/panel.gif" width="560" alt="The expanded panel: six sessions sorted most urgent first — blocked on a permission prompt, a failed turn, three working and one finished — with a subagent subtree, coloured bars for sessions given a colour, a context meter and plan-usage bars">
 </p>
 
 The mascot is present in every state, and the state changes its **face** and **colour**:
