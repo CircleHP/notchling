@@ -32,7 +32,11 @@ jobs:
     # against the deployment target, which Package.swift pins to macOS 14.
     runs-on: macos-26
     steps:
+      # The whole history, not the default single commit: the release notes are built from the
+      # commits since the previous tag, and the bump step pushes to main.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # Recorded so a release that misbehaves can be tied to the toolchain that built it.
       - name: Toolchain
@@ -119,14 +123,20 @@ jobs:
 
       # The checksum file ships beside the tarball so a formula's sha256 can be taken from the
       # release rather than recomputed by hand — though the tap verifies it against the download.
+      #
+      # Notes come from the commits since the previous tag rather than `--generate-notes`, which
+      # lists pull requests and so says nothing about a release made of direct commits. Echoed
+      # before publishing, so the run log shows what was published even if the release is edited.
       - name: Publish
         if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+          ./release-notes.sh "$RELEASE_TAG" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
           gh release create "$RELEASE_TAG" \
             ".build/dist/notchling-$version-universal.tar.gz" \
             ".build/dist/notchling-$version-universal.tar.gz.sha256" \
             --title "$RELEASE_TAG" \
-            --generate-notes
+            --notes-file "$RUNNER_TEMP/notes.md"
