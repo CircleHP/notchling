@@ -56,6 +56,9 @@ enum Theme {
         case "cyan": Color(red: 100 / 255, green: 200 / 255, blue: 210 / 255)
         case "white": ink
         case "gray", "grey": dim
+        // A name we do not recognise still means the user set one, and showing nothing is
+        // indistinguishable from never having set it. Neutral rather than absent.
+        case .some(let other) where !other.isEmpty: inkSecondary
         default: nil
         }
     }
