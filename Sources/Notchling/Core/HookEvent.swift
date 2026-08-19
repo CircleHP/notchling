@@ -26,6 +26,7 @@ struct HookEvent: Decodable {
     var source: String?
     var reason: String?
     var errorMessage: String?
+    var transcriptPath: String?
 
     var focusURL: String?
     var warpSessionId: String?

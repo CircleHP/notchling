@@ -57,6 +57,8 @@ final class SessionStore {
 
     private let processEnvironment = ProcessEnvironmentReader()
 
+    private let transcripts = TranscriptReader()
+
     /// pids already looked up, so a session with genuinely no terminal identity is not re-probed on
     /// every sweep. Purged by `remove(id:)`: a pid that outlives its session blocks identity
     /// resolution for whatever process macOS gives that number to next.
@@ -84,6 +86,7 @@ final class SessionStore {
             resolvedPIDs.remove(pid)
             processEnvironment.forget(pid: pid)
         }
+        transcripts.forget(sessionID: id)
         onRemoved?(session)
         return session
     }
@@ -145,6 +148,10 @@ final class SessionStore {
             wasAgentScoped = applyAgentEvent(
                 event, agentID: agentID, to: &session, sessionState: &newState
             )
+        }
+
+        if let path = event.transcriptPath, session.transcriptPath == nil {
+            session.transcriptPath = path
         }
 
         if !wasAgentScoped {
@@ -248,6 +255,7 @@ final class SessionStore {
         index[event.sessionId] = session
         rebuild()
         notifyTransition(from: previous, session: session)
+        readTranscriptMarks(for: event.sessionId)
     }
 
     /// Apply an event that came from inside a subagent, and report whether it was one of those at all.
@@ -394,6 +402,7 @@ final class SessionStore {
             session.pid = entry.pid
             // A missing field means the registry did not report it, not that it was cleared.
             if let name = entry.name { session.name = name }
+            session.nameSource = entry.nameSource
             if let cwd = entry.cwd { session.cwd = cwd }
             if let kind = entry.kind.flatMap(SessionKind.init(rawValue:)) { session.kind = kind }
             if let jobID = entry.jobId { session.jobID = jobID }
@@ -454,6 +463,8 @@ final class SessionStore {
                 resolveTerminalIdentity(for: entry.sessionId, pid: pid)
             }
 
+            readTranscriptMarks(for: entry.sessionId)
+
             notifyTransition(from: previous, session: session)
         }
 
@@ -479,6 +490,24 @@ final class SessionStore {
         }
 
         rebuild()
+    }
+
+    /// The title Claude derives and the colour a user sets live only in the session's transcript, so
+    /// they have to be read rather than received. Cheap in practice: the reader does nothing unless
+    /// the file changed since it last looked, and it reads backwards from the end.
+    private func readTranscriptMarks(for sessionID: String) {
+        guard let session = index[sessionID] else { return }
+        let path = session.transcriptPath
+            ?? session.cwd.flatMap { TranscriptReader.path(forSession: sessionID, cwd: $0) }
+        guard let path else { return }
+
+        transcripts.read(sessionID: sessionID, path: path) { [weak self] marks in
+            guard let self, var session = self.index[sessionID] else { return }
+            if let title = marks.title { session.aiTitle = title }
+            if let colour = marks.colorName { session.colorName = colour }
+            self.index[sessionID] = session
+            self.rebuild()
+        }
     }
 
     private func resolveTerminalIdentity(for sessionID: String, pid: Int32) {

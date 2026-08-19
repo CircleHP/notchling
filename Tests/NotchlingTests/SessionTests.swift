@@ -253,4 +253,36 @@ struct StoreFinishMemoryTests {
         store.apply(hookEvent("UserPromptSubmit", session: "s", at: clock.current))
         #expect(store.sessions.first?.lastFinishedAt == nil)
     }
+
+    /// `notchling-1a` identifies nothing when three sessions are open, and Claude already derives a
+    /// real title from the conversation. A name a person chose still beats both.
+    @Test("a chosen name wins, then Claude's title, then the slug")
+    func namePrecedence() {
+        var session = Session(sessionID: "abcdef1234")
+        session.cwd = "/Users/me/work/api"
+        #expect(session.displayName == "api", "nothing but cwd yet")
+
+        session.name = "notchling-1a"
+        session.nameSource = "derived"
+        #expect(session.displayName == "notchling-1a", "the slug, until there is a title")
+
+        session.aiTitle = "Ship app via Homebrew"
+        #expect(session.displayName == "Ship app via Homebrew")
+
+        session.name = "release work"
+        session.nameSource = nil
+        #expect(session.displayName == "release work", "a name someone set beats a derived title")
+    }
+
+    /// A background job's registry name is the task's own title, which is already the best name it
+    /// has — replacing it with a conversation-derived one would be a downgrade.
+    @Test("a background job keeps its registry name")
+    func backgroundKeepsItsName() {
+        var session = Session(sessionID: "s")
+        session.kind = .bg
+        session.name = "fix the flaky test"
+        session.nameSource = "derived"
+        session.aiTitle = "Investigating CI failures"
+        #expect(session.displayName == "fix the flaky test")
+    }
 }

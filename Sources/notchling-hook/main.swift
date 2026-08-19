@@ -139,6 +139,9 @@ put("agentType", string("agent_type"))
 // only place a subagent's own transcript is ever named, and dropping it here would mean re-deriving
 // it later from an agent id we do not control the format of.
 put("agentTranscriptPath", string("agent_transcript_path"))
+// The session's own transcript, which is where Claude Code records the title it derives from the
+// conversation and the colour set with `/color`. Forwarded rather than re-derived from cwd and id.
+put("transcriptPath", string("transcript_path"))
 
 put("notificationType", string("notification_type"))
 put("message", truncated(string("message"), to: maxMessageLength))

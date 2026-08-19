@@ -98,6 +98,16 @@ struct Session: Identifiable, Equatable, ToolTracking {
     var tty: String?
     var processCommand: String?
 
+    /// From the registry: `"derived"` when Claude Code made the name up, absent when a person set it.
+    var nameSource: String?
+    /// The title Claude derives from the conversation — what `claude --resume` lists. Read from the
+    /// transcript, because it is recorded nowhere else.
+    var aiTitle: String?
+    /// A colour set with `/color`, if one was. Absent for every session that never set one.
+    var colorName: String?
+    /// The session's own transcript, as the hook reported it.
+    var transcriptPath: String?
+
     /// When this session first went missing from the registry snapshot, or nil while it is present.
     var missingFromRegistrySince: Date?
 
@@ -109,9 +119,15 @@ struct Session: Identifiable, Equatable, ToolTracking {
         self.sessionID = sessionID
     }
 
-    /// The registry's `name` is already good — a slug for an interactive session, the task title for
-    /// a background job. Fall back through cwd to a short id only when it is missing.
+    /// A name someone chose beats one anything derived, and `notchling-1a` identifies nothing when
+    /// three sessions are open. So: the user's name, then the title Claude derives from the
+    /// conversation, then the registry's slug while the session is too young to have either.
+    ///
+    /// Background jobs keep the registry name unconditionally — for those it is the task's own title,
+    /// which is already the best name available.
     var displayName: String {
+        if let name, !name.isEmpty, nameSource != "derived" { return name }
+        if kind != .bg, let aiTitle, !aiTitle.isEmpty { return aiTitle }
         if let name, !name.isEmpty { return name }
         if let cwd, !cwd.isEmpty { return URL(fileURLWithPath: cwd).lastPathComponent }
         return String(sessionID.prefix(8))
