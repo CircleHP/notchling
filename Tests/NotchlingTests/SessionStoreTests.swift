@@ -506,6 +506,23 @@ struct SessionStoreRegistryTests {
         #expect(store.sessions.isEmpty, "a pid can be recycled, so absence eventually wins")
     }
 
+    @Test("a session with no pid gets the grace period, not an immediate drop")
+    func missingPIDGrace() {
+        let clock = TestClock()
+        let store = SessionStore(now: clock.now)
+
+        // The hook reports no pid when `CLAUDE_PID` is unset and the parent walk finds no claude
+        // process — which is the same moment the registry file may not exist yet, so treating it as
+        // death made the row appear and vanish.
+        store.apply(hookEvent("UserPromptSubmit", at: clock.current))
+        store.apply(registry: [])
+        #expect(store.sessions.count == 1, "no pid is unknown, not dead")
+
+        clock.advance(SessionStore.registryGrace + 1)
+        store.apply(registry: [])
+        #expect(store.sessions.isEmpty, "it still cannot outlive the grace period")
+    }
+
     @Test("a session whose process is gone is dropped immediately")
     func deadProcessDropped() {
         let store = SessionStore()

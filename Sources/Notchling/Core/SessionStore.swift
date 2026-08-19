@@ -474,8 +474,11 @@ final class SessionStore {
         // pid looks alive, because a pid can be recycled.
         let stamp = now()
         for (id, var session) in index where !seen.contains(id) {
-            let alive = session.pid.map(ProcessLiveness.isAlive) ?? false
-            guard alive else {
+            // A pid we have and cannot find is proof the session is gone. No pid at all is not: the
+            // hook resolves it from `CLAUDE_PID` or a walk up the parent chain, and both come up
+            // empty often enough. Reading that as death removed the grace period from the one case
+            // it was written for — hook events arriving before the registry file exists.
+            if let pid = session.pid, !ProcessLiveness.isAlive(pid) {
                 remove(id: id)
                 continue
             }
