@@ -8,11 +8,12 @@
 the one that needs you.** Click a row, land in the terminal tab that owns it.
 
 <p align="center">
-  <img src="media/notchling.gif" width="700" alt="Notchling in the notch: a compact strip showing session counts drops open into a panel listing three Claude Code sessions — one blocked on a permission prompt with three subagents beneath it, one editing, one finished — then closes again">
+  <img src="media/notchling.gif" width="700" alt="Notchling in the notch: a compact strip showing session counts drops open by itself into a panel listing six Claude Code sessions — one blocked on a permission prompt, one whose turn failed, three working, one just finished — with a subagent beneath one of them, coloured bars marking the sessions the user has tagged, and plan-usage meters at the bottom, then closes again">
 </p>
 
-<p align="center"><i>Resting in the notch, opening on a permission prompt, and closing again. The top session
-has fanned out to three subagents; one is blocked, and one reports back while the panel is open.<br>
+<p align="center"><i>Resting in the notch, opening by itself when a session blocks on a permission prompt, and
+closing again. Nothing is hovered or clicked: the panel drops open because something changed. A second
+session finishes while it is open.<br>
 Clicking any row activates the terminal tab that owns that session.</i></p>
 
 ## Why
