@@ -23,7 +23,7 @@ struct TranscriptReaderTests {
         ])
         defer { try? FileManager.default.removeItem(atPath: path) }
 
-        let marks = TranscriptReader.marks(inFileAt: path)
+        let marks = TranscriptReader.scan(fileAt: path, after: nil).marks
         #expect(marks.title == "Ship app via Homebrew")
         #expect(marks.colorName == "green")
     }
@@ -38,13 +38,13 @@ struct TranscriptReaderTests {
         ])
         defer { try? FileManager.default.removeItem(atPath: path) }
 
-        let marks = TranscriptReader.marks(inFileAt: path)
+        let marks = TranscriptReader.scan(fileAt: path, after: nil).marks
         #expect(marks.isEmpty)
     }
 
     @Test("a missing transcript is not an error")
     func missingFile() {
-        #expect(TranscriptReader.marks(inFileAt: "/nope/does-not-exist.jsonl").isEmpty)
+        #expect(TranscriptReader.scan(fileAt: "/nope/does-not-exist.jsonl", after: nil).marks.isEmpty)
     }
 
     /// The reader works backwards in chunks, so a line landing across a chunk boundary is the case
@@ -61,7 +61,69 @@ struct TranscriptReaderTests {
 
         let size = (try! FileManager.default.attributesOfItem(atPath: path)[.size] as! NSNumber).intValue
         #expect(size > TranscriptReader.chunkSize, "the test file must be bigger than one chunk")
-        #expect(TranscriptReader.marks(inFileAt: path).title == "early title")
+        #expect(TranscriptReader.scan(fileAt: path, after: nil).marks.title == "early title")
+    }
+
+    /// The reason the scan is incremental: the loop only stops early when *both* marks are found, so
+    /// a session that never set a colour never finds one and runs to the byte limit — on every change
+    /// to a file that changes with every message.
+    @Test("a second scan starts where the first one stopped")
+    func onlyReadsWhatIsNew() {
+        let filler = String(repeating: "x", count: 4_000)
+        var lines = [#"{"type":"ai-title","aiTitle":"first","sessionId":"s"}"#]
+        for index in 0 ..< 120 {
+            lines.append(#"{"type":"assistant","pad":"\#(filler)","n":\#(index)}"#)
+        }
+        let path = writeTranscript(lines)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        // No colour in the file, so this one runs all the way to the start.
+        let first = TranscriptReader.scan(fileAt: path, after: nil)
+        #expect(first.marks.title == "first")
+        #expect(first.marks.colorName == nil)
+        #expect(first.searchedFrom == 0, "having reached the start, there is nothing left below")
+
+        let handle = try! FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try! handle.seekToEnd()
+        handle.write(Data(#"{"type":"agent-color","agentColor":"green","sessionId":"s"}\#n"#.utf8))
+        try! handle.close()
+
+        let second = TranscriptReader.scan(fileAt: path, after: first)
+        #expect(second.marks.colorName == "green", "the appended mark is picked up")
+        #expect(second.marks.title == "first", "and what was already known is kept")
+    }
+
+    @Test("a transcript replaced with a shorter one is read again from scratch")
+    func shrunkFileIsRescanned() {
+        let path = writeTranscript([#"{"type":"ai-title","aiTitle":"old","sessionId":"s"}"#])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let first = TranscriptReader.scan(fileAt: path, after: nil)
+        #expect(first.marks.title == "old")
+
+        // Same path, different file. Anything remembered about the previous one is meaningless.
+        try! #"{"type":"ai-title","aiTitle":"new","sessionId":"s"}"#
+            .write(toFile: path, atomically: true, encoding: .utf8)
+
+        let stale = TranscriptScan(marks: first.marks, searchedFrom: 10_000)
+        #expect(TranscriptReader.scan(fileAt: path, after: stale).marks.title == "new")
+    }
+
+    /// Carrying a partial line between chunks is what makes a single enormous line cost more than
+    /// the scan around it, so lines past the cap are dropped rather than carried.
+    @Test("an enormous line does not hide the marks around it")
+    func hugeLineIsSkipped() {
+        let huge = String(repeating: "y", count: TranscriptReader.maxLineLength + 5_000)
+        let path = writeTranscript([
+            #"{"type":"ai-title","aiTitle":"kept","sessionId":"s"}"#,
+            #"{"type":"assistant","pad":"\#(huge)"}"#,
+            #"{"type":"agent-color","agentColor":"blue","sessionId":"s"}"#,
+        ])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let marks = TranscriptReader.scan(fileAt: path, after: nil).marks
+        #expect(marks.colorName == "blue")
+        #expect(marks.title == "kept")
     }
 
     @Test("a transcript path is derived from cwd when the hook did not name one")

@@ -135,7 +135,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let relaunch = Process()
         relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
         relaunch.arguments = ["-c", "sleep 1; /usr/bin/open \(quoted)"]
-        try? relaunch.run()
+
+        // Quitting before knowing the replacement is on its way would leave the user with no widget
+        // and nothing to bring it back — their own click having removed it.
+        do {
+            try relaunch.run()
+        } catch {
+            Log.focus.error("could not start the replacement, staying up: \(error.localizedDescription, privacy: .public)")
+            return
+        }
 
         NSApp.terminate(nil)
     }

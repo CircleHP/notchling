@@ -21,6 +21,14 @@ struct TranscriptMarks: Equatable {
     var isEmpty: Bool { title == nil && colorName == nil }
 }
 
+/// How much of one transcript has been examined, and what it yielded.
+struct TranscriptScan: Equatable {
+    var marks: TranscriptMarks
+    /// Everything from here to the end of the file has been read. Only what arrives after it can
+    /// change the answer.
+    var searchedFrom: UInt64
+}
+
 @MainActor
 final class TranscriptReader {
     /// Read from the end in chunks this size, stopping as soon as both marks are found.
@@ -29,11 +37,23 @@ final class TranscriptReader {
     /// this, treat it as absent rather than reading an entire conversation off disk.
     nonisolated static let maxBytesScanned = 4 * 1024 * 1024
 
+    /// A line longer than this is not one of the two we are looking for, and carrying it between
+    /// chunks is what would make a single enormous line cost more than the scan itself.
+    nonisolated static let maxLineLength = 64 * 1024
+
     private let queue = DispatchQueue(label: "local.notchling.transcript", qos: .utility)
     private var inFlight: Set<String> = []
     /// Modification date of the last transcript read, per session. Transcripts grow constantly, so
     /// re-reading an unchanged one is pure waste.
     private var lastModified: [String: Date] = [:]
+    /// What the last read found, and how far back it had to look to be sure.
+    ///
+    /// Without this every session that has never set a colour re-reads the whole tail on every
+    /// change: the scan only stops early when *both* marks are found, so a mark that is simply not
+    /// in the file is never found and the search runs to its limit. Transcripts change on every
+    /// message, so that is a few megabytes parsed every couple of seconds, for an answer that cannot
+    /// have changed except in the bytes appended since.
+    private var progress: [String: TranscriptScan] = [:]
 
     /// Where Claude Code keeps a session's transcript when the hook payload did not name it: the cwd
     /// with every `/` turned into `-`, under `~/.claude/projects`.
@@ -59,14 +79,16 @@ final class TranscriptReader {
         guard lastModified[sessionID] != modified else { return }
 
         inFlight.insert(sessionID)
+        let previous = progress[sessionID]
         queue.async {
-            let marks = Self.marks(inFileAt: path)
+            let scan = Self.scan(fileAt: path, after: previous)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.inFlight.remove(sessionID)
                 self.lastModified[sessionID] = modified
-                guard !marks.isEmpty else { return }
-                completion(marks)
+                self.progress[sessionID] = scan
+                guard !scan.marks.isEmpty, scan.marks != previous?.marks else { return }
+                completion(scan.marks)
             }
         }
     }
@@ -74,25 +96,46 @@ final class TranscriptReader {
     /// Forget a session, so a transcript that is written again is read again.
     func forget(sessionID: String) {
         lastModified.removeValue(forKey: sessionID)
+        progress.removeValue(forKey: sessionID)
         inFlight.remove(sessionID)
     }
 
     // MARK: - Reading
 
-    nonisolated static func marks(inFileAt path: String) -> TranscriptMarks {
-        guard let handle = FileHandle(forReadingAtPath: path) else { return TranscriptMarks() }
+    /// Reads backwards from the end, stopping as soon as both marks are found — or as soon as it
+    /// reaches ground a previous scan already covered, since nothing there can have changed.
+    ///
+    /// `previous` is what the last scan of this file returned. Its marks are the starting point, and
+    /// its `searchedFrom` is the floor: on a file that has grown by one message, that leaves one
+    /// chunk to read instead of the whole limit.
+    nonisolated static func scan(fileAt path: String, after previous: TranscriptScan?) -> TranscriptScan {
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            return previous ?? TranscriptScan(marks: TranscriptMarks(), searchedFrom: 0)
+        }
         defer { try? handle.close() }
-        guard let end = try? handle.seekToEnd() else { return TranscriptMarks() }
+        guard let end = try? handle.seekToEnd() else {
+            return previous ?? TranscriptScan(marks: TranscriptMarks(), searchedFrom: 0)
+        }
 
-        var found = TranscriptMarks()
+        var found = previous?.marks ?? TranscriptMarks()
+
+        // A file that shrank was replaced rather than appended to, so nothing known about it holds.
+        var floor = previous?.searchedFrom ?? 0
+        if floor > end {
+            found = TranscriptMarks()
+            floor = 0
+        }
+        // One line of overlap, so a line straddling the boundary is not missed by both scans.
+        floor = floor > UInt64(maxLineLength) ? floor - UInt64(maxLineLength) : 0
+
         var offset = end
         var scanned = 0
         // A line straddling a chunk boundary would parse as two broken halves, so the leftover head of
         // each chunk is carried into the next one, which is read earlier in the file.
         var carry = Data()
 
-        while offset > 0, scanned < maxBytesScanned, found.title == nil || found.colorName == nil {
-            let size = UInt64(min(chunkSize, Int(offset)))
+        while offset > floor, scanned < maxBytesScanned, found.title == nil || found.colorName == nil {
+            let size = UInt64(min(UInt64(chunkSize), offset - floor))
             offset -= size
             guard (try? handle.seek(toOffset: offset)) != nil,
                   let chunk = try? handle.read(upToCount: Int(size))
@@ -103,21 +146,25 @@ final class TranscriptReader {
             buffer.append(carry)
             let lines = buffer.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
             // The first piece may be a partial line unless this chunk starts the file.
-            if offset > 0, let head = lines.first {
+            if offset > 0, let head = lines.first, head.count <= maxLineLength {
                 carry = Data(head)
             } else {
+                // Either the file starts here, or the partial line is longer than anything we are
+                // looking for. Carrying that would grow without bound across chunks.
                 carry = Data()
             }
             let complete = offset > 0 ? lines.dropFirst() : lines[...]
 
             for line in complete.reversed() {
-                guard !line.isEmpty else { continue }
+                guard !line.isEmpty, line.count <= maxLineLength else { continue }
                 absorb(line: Data(line), into: &found)
                 if found.title != nil, found.colorName != nil { break }
             }
         }
 
-        return found
+        // Only claim ground actually covered: a scan stopped by `maxBytesScanned` has not seen
+        // everything below `offset`, and saying otherwise would skip it for ever.
+        return TranscriptScan(marks: found, searchedFrom: offset)
     }
 
     /// Only the two entry types matter, and only the newest of each — so a value already found is
