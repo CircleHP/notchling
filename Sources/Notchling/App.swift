@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         loadApplicationIcon()
         SessionMetricsReader.pruneStaleFiles()
+        UsageReader.pruneStaleFiles()
 
         let widget = WidgetController(
             store: store,

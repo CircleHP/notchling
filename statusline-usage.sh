@@ -18,10 +18,17 @@ input=$(cat)
 out_dir="$HOME/.notchling"
 out_file="$out_dir/usage.json"
 session_dir="$out_dir/sessions"
-mkdir -p "$session_dir" 2>/dev/null || true
+usage_dir="$out_dir/usage"
+mkdir -p "$session_dir" "$usage_dir" 2>/dev/null || true
 
 if command -v jq >/dev/null 2>&1; then
-  # Only touch usage.json when this payload actually carries rate limits. Print-mode (`claude -p`)
+  # Read once, and only ever build a filename out of id-safe characters.
+  session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
+  case "$session_id" in
+    *[!A-Za-z0-9._-]* | '') session_id="" ;;
+  esac
+
+  # Only touch the usage files when this payload actually carries rate limits. Print-mode (`claude -p`)
   # and other headless runs report them as null, and writing that would clobber the last good numbers
   # with nulls — the panel would show nothing at all rather than something marked stale.
   if printf '%s' "$input" \
@@ -37,6 +44,19 @@ if command -v jq >/dev/null 2>&1; then
           sevenDayUsedPercent: .rate_limits.seven_day.used_percentage,
           sevenDayResetsAt: .rate_limits.seven_day.resets_at
         }' > "$tmp" 2>/dev/null; then
+      # Also one file per session. Every session renders on its own schedule carrying the rate
+      # limits from its own last server response, so a single shared file records whichever wrote
+      # last rather than whichever measured most recently — and an idle session rendering a
+      # twenty-minute-old reading would walk the bars backwards. The app arbitrates across these.
+      #
+      # usage.json is still written, for a widget from before this existed. An upgrade leaves the
+      # old one running against the new script, and it knows nothing about this directory.
+      if [ -n "$session_id" ]; then
+        stmp="$usage_dir/$session_id.json.$$.tmp"
+        if cp "$tmp" "$stmp" 2>/dev/null; then
+          mv -f "$stmp" "$usage_dir/$session_id.json" 2>/dev/null || rm -f "$stmp"
+        fi
+      fi
       mv -f "$tmp" "$out_file" 2>/dev/null || rm -f "$tmp"
     else
       rm -f "$tmp"
@@ -46,10 +66,8 @@ if command -v jq >/dev/null 2>&1; then
   # --- Per-session metrics ------------------------------------------------------------------
   #
   # One file per session id rather than a shared one, so concurrent sessions cannot race each other.
-  session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
   case "$session_id" in
-    # Only ever write a filename made of id-safe characters.
-    *[!A-Za-z0-9._-]* | '') ;;
+    '') ;;
     *)
       stmp="$session_dir/$session_id.json.$$.tmp"
       if printf '%s' "$input" | jq -c '{
