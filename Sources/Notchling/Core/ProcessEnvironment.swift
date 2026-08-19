@@ -28,7 +28,10 @@ final class ProcessEnvironmentReader {
     /// A process's environment is fixed at exec time, so one read per pid is enough — for as long as
     /// that pid means the same process. It stops meaning it when the process dies, which is what
     /// `forget` is for.
-    func read(pid: Int32, completion: @escaping (TerminalIdentity) -> Void) {
+    /// The callback is `@MainActor` because that is where it runs, and `@Sendable` because it
+    /// travels through the queue to get there — the two together are what say "handed over, then
+    /// called at home" rather than "called wherever it lands".
+    func read(pid: Int32, completion: @escaping @MainActor @Sendable (TerminalIdentity) -> Void) {
         if let cached = cache[pid] {
             completion(cached)
             return
