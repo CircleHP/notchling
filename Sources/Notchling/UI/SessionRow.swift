@@ -38,16 +38,36 @@ struct SessionRow: View {
                     .frame(minWidth: metrics.size(58), alignment: .trailing)
             }
             .padding(.vertical, metrics.size(5))
-            .padding(.horizontal, metrics.size(7))
+            .padding(.leading, metrics.size(7) + Self.colorGutter(metrics))
+            .padding(.trailing, metrics.size(7))
             .background {
                 RoundedRectangle(cornerRadius: metrics.size(7))
                     .fill(isHovering ? Theme.surface : .clear)
+                    .overlay(alignment: .leading) { colorBar }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .help(helpText)
+    }
+
+    /// Reserved whether or not this session has a colour, so the state dots stay in one column down
+    /// the panel instead of jogging left and right row by row.
+    private static func colorGutter(_ metrics: WidgetMetrics) -> CGFloat { metrics.size(7) }
+
+    /// The session's own colour, set with `/color`. A bar rather than a dot: the state palette and the
+    /// colour palette both contain red, green and yellow, so a coloured dot beside the state dot would
+    /// read as a second state. Position is what keeps the two apart.
+    @ViewBuilder
+    private var colorBar: some View {
+        if let colour = Theme.sessionColor(named: session.colorName) {
+            Capsule()
+                .fill(colour)
+                .frame(width: metrics.size(3))
+                .padding(.vertical, metrics.size(4))
+                .padding(.leading, metrics.size(4))
+        }
     }
 
     private var titleLine: some View {

@@ -41,6 +41,25 @@ enum Theme {
     /// Applied to a whole row's worth of text when the numbers behind it have gone stale.
     static let staleOpacity: Double = 0.55
 
+    // MARK: - Session colour
+
+    /// A colour a user set with `/color`, mapped from the terminal palette Claude Code offers. Unknown
+    /// names return nil rather than a guess: no marker is better than the wrong one, and the palette
+    /// can grow without this having to know.
+    static func sessionColor(named name: String?) -> Color? {
+        switch name?.lowercased() {
+        case "red": red
+        case "green": green
+        case "yellow", "amber": amber
+        case "blue": Color(red: 100 / 255, green: 160 / 255, blue: 235 / 255)
+        case "magenta", "pink": Color(red: 210 / 255, green: 120 / 255, blue: 200 / 255)
+        case "cyan": Color(red: 100 / 255, green: 200 / 255, blue: 210 / 255)
+        case "white": ink
+        case "gray", "grey": dim
+        default: nil
+        }
+    }
+
     // MARK: - State
 
     static func color(for state: SessionState) -> Color {
