@@ -27,6 +27,7 @@ struct WidgetRoot: View {
     let onContentGeometry: (WidgetPresentation, WidgetContentGeometry) -> Void
     let onFocus: (Session) -> Void
     let onQuit: () -> Void
+    let onRestart: () -> Void
 
     var body: some View {
         WidgetView(
@@ -37,7 +38,8 @@ struct WidgetRoot: View {
             onHover: onHover,
             onContentGeometry: onContentGeometry,
             onFocus: onFocus,
-            onQuit: onQuit
+            onQuit: onQuit,
+            onRestart: onRestart
         )
     }
 }

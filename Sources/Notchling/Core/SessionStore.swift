@@ -16,6 +16,17 @@ final class SessionStore {
     /// How long a finished session stays visibly `done` before settling to `idle`.
     static let doneDecay: TimeInterval = 20
 
+    /// How often the copy on disk is compared with the one running.
+    ///
+    /// Deliberately long. Releases are rare, the newest one is the stable one until somebody reports
+    /// otherwise, and the widget is meant to run for weeks at a time — so a user who has already
+    /// waited for a release can wait a few more hours to be told about it. Checking often would buy
+    /// nothing and cost a plist read on a timer that exists for something else.
+    ///
+    /// Wall-clock, so a machine that slept through the interval notices on the next sweep after it
+    /// wakes rather than counting only the time it was awake.
+    static let versionCheckInterval: TimeInterval = 6 * 60 * 60
+
     /// How long a session may be absent from the registry snapshot before it is dropped. Covers the
     /// start-up window where hooks fire before the registry file is written.
     static let registryGrace: TimeInterval = 30
@@ -41,6 +52,9 @@ final class SessionStore {
     private(set) var sessions: [Session] = []
 
     var usage: UsageSnapshot?
+
+    /// A build sitting on disk that this process is not the one running. See `InstalledBuild`.
+    var pendingVersion: String?
 
     /// Fired for every state transition, once per edge.
     var onTransition: ((Session, SessionState, SessionState) -> Void)?
@@ -68,9 +82,15 @@ final class SessionStore {
     /// file that compares timestamps has edge cases an hour or a second either side of the obvious case, so
     /// they are worth pinning down deterministically.
     private let now: () -> Date
+    private let readPendingVersion: () -> String?
+    private var lastVersionCheck: Date?
 
-    init(now: @escaping () -> Date = { Date.now }) {
+    init(
+        now: @escaping () -> Date = { Date.now },
+        pendingVersion: @escaping () -> String? = { InstalledBuild.pendingVersion() }
+    ) {
         self.now = now
+        self.readPendingVersion = pendingVersion
     }
 
     /// The only way a session leaves the store.
@@ -534,6 +554,8 @@ final class SessionStore {
         let freshUsage = UsageReader.read()
         if freshUsage != usage { usage = freshUsage }
 
+        refreshPendingVersion()
+
         let metrics = SessionMetricsReader.readAll()
 
         var changed = false
@@ -579,6 +601,18 @@ final class SessionStore {
         }
 
         if changed { rebuild() }
+    }
+
+    /// Throttled: `tick()` runs every two seconds, and nothing about an upgrade changes that fast.
+    private func refreshPendingVersion() {
+        let stamp = now()
+        if let last = lastVersionCheck, stamp.timeIntervalSince(last) < Self.versionCheckInterval {
+            return
+        }
+        lastVersionCheck = stamp
+
+        let found = readPendingVersion()
+        if found != pendingVersion { pendingVersion = found }
     }
 
     // MARK: - Internals

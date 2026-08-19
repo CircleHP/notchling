@@ -42,7 +42,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         loadApplicationIcon()
         SessionMetricsReader.pruneStaleFiles()
 
-        let widget = WidgetController(store: store, onQuit: { NSApp.terminate(nil) })
+        let widget = WidgetController(
+            store: store,
+            onQuit: { NSApp.terminate(nil) },
+            onRestart: { [weak self] in self?.restartIntoInstalledBuild() }
+        )
         self.widget = widget
 
         store.onChange = { [weak widget] in
@@ -110,6 +114,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         spool?.stop()
         registry?.stop()
         widget?.stop()
+    }
+
+    /// Relaunches from whichever copy is on disk now, which after an upgrade is not the one this
+    /// process started from.
+    ///
+    /// The relaunch is handed to a detached shell that waits: `open` on a bundle whose app is still
+    /// running activates the running copy rather than starting the new binary, so the new one can
+    /// only be started once this one is gone. Under `brew services` launchd will have restarted it
+    /// already by then, and `open` finds it running and does nothing — which is why a second copy
+    /// cannot result, on top of the guard in `isAlreadyRunning`.
+    private func restartIntoInstalledBuild() {
+        let target = InstalledBuild.installedBundle(forRunningBundleAt: Bundle.main.bundleURL)
+        let quoted = "'" + target.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relaunch.arguments = ["-c", "sleep 1; /usr/bin/open \(quoted)"]
+        try? relaunch.run()
+
+        NSApp.terminate(nil)
     }
 
     /// An accessory app has no Dock tile, so AppKit never loads its icon, and system UI that asks

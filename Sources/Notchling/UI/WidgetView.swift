@@ -29,6 +29,7 @@ struct WidgetView: View {
     let onContentGeometry: (WidgetPresentation, WidgetContentGeometry) -> Void
     let onFocus: (Session) -> Void
     let onQuit: () -> Void
+    let onRestart: () -> Void
 
     /// Measured from each layout itself. The container animates between these two numbers — animating a
     /// frame to `nil` resolves to the final size immediately and renders as a slide, not a growth.
@@ -208,7 +209,7 @@ struct WidgetView: View {
     @ViewBuilder
     private var expanded: some View {
         if showsPanel {
-            ExpandedView(store: store, onFocus: onFocus, onQuit: onQuit)
+            ExpandedView(store: store, onFocus: onFocus, onQuit: onQuit, onRestart: onRestart)
                 // Only reachable on the first-open path above, where the panel *is* present during a
                 // transition. Rows carry buttons, `.onHover` and `.help` tooltips, and a geometry change
                 // makes SwiftUI re-hit-test every one of them — a fifth of the animation's cost, for

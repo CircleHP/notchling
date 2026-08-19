@@ -17,6 +17,7 @@ struct ExpandedView: View {
     let store: SessionStore
     let onFocus: (Session) -> Void
     let onQuit: () -> Void
+    let onRestart: () -> Void
 
     /// Which rows the panel draws, captured when it opened.
     ///
@@ -34,16 +35,27 @@ struct ExpandedView: View {
 
     @Environment(\.widgetMetrics) private var metrics
 
-    init(store: SessionStore, onFocus: @escaping (Session) -> Void, onQuit: @escaping () -> Void) {
+    init(
+        store: SessionStore,
+        onFocus: @escaping (Session) -> Void,
+        onQuit: @escaping () -> Void,
+        onRestart: @escaping () -> Void
+    ) {
         self.store = store
         self.onFocus = onFocus
         self.onQuit = onQuit
+        self.onRestart = onRestart
         _layout = State(initialValue: PanelLayout(sessions: store.sessions))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: metrics.size(8)) {
             header
+
+            if let version = store.pendingVersion {
+                UpgradeNoticeRow(version: version, onRestart: onRestart)
+                    .padding(.horizontal, metrics.size(Self.contentInset))
+            }
 
             if layout.rows.isEmpty {
                 Text("No Claude sessions running")
@@ -127,5 +139,46 @@ struct ExpandedView: View {
     private var summary: String {
         let count = layout.sessionCount
         return count == 1 ? "1 session" : "\(count) sessions"
+    }
+}
+
+/// An upgrade that has landed on disk but is not what this process is running. Replacing an app's
+/// files leaves the running one alone, and every other signal — the package manager, the `opt` path —
+/// already reports the new version, so this row is the only place the difference is visible.
+private struct UpgradeNoticeRow: View {
+    let version: String
+    let onRestart: () -> Void
+
+    @Environment(\.widgetMetrics) private var metrics
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: onRestart) {
+            HStack(spacing: metrics.size(6)) {
+                Image(systemName: "arrow.clockwise.circle.fill")
+                    .font(metrics.font(11))
+                    .foregroundStyle(Theme.amber)
+
+                Text("Version \(version) installed")
+                    .font(metrics.font(11, weight: .medium))
+                    .foregroundStyle(Theme.ink)
+
+                Spacer(minLength: metrics.size(4))
+
+                Text("Restart")
+                    .font(metrics.font(10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Theme.amber)
+            }
+            .padding(.vertical, metrics.size(5))
+            .padding(.horizontal, metrics.size(7))
+            .background {
+                RoundedRectangle(cornerRadius: metrics.size(7))
+                    .fill(isHovering ? Theme.surface : Theme.surface.opacity(0.6))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .help("This widget is still running the previous build. Restart to pick up \(version).")
     }
 }
