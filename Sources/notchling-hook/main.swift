@@ -176,18 +176,37 @@ try? fileManager.createDirectory(
     attributes: [.posixPermissions: 0o700]
 )
 
-/// Keeps the spool bounded in case the app is never running to drain it.
+/// Keeps the spool bounded in case the app is never running to drain it: anything past its useful
+/// life first, then the oldest of whatever is left until the count is under the cap.
+///
+/// Both passes are needed. Ten minutes of a busy session is more than `spoolCap` events on its own —
+/// one per tool call — and an age cutoff alone would then delete nothing at all, which is exactly the
+/// case this exists for.
+///
+/// Only finished event files count. A dotted `.tmp` belongs to another hook that is still writing,
+/// and `failed/` is where the app sets aside events it could not read.
 func pruneIfNeeded() {
-    guard let entries = try? fileManager.contentsOfDirectory(atPath: spoolDirectory.path),
-          entries.count >= spoolCap
-    else { return }
+    guard let entries = try? fileManager.contentsOfDirectory(atPath: spoolDirectory.path) else { return }
+
+    // Millisecond-prefixed names, so this sort is chronological and the oldest are at the front.
+    let files = entries.filter { $0.hasSuffix(".json") && !$0.hasPrefix(".") }.sorted()
+    guard files.count >= spoolCap else { return }
 
     let cutoff = Date().addingTimeInterval(-600)
-    for entry in entries {
-        let url = spoolDirectory.appendingPathComponent(entry)
+    var survivors: [String] = []
+    for name in files {
+        let url = spoolDirectory.appendingPathComponent(name)
         let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-        if let modified, modified > cutoff { continue }
+        if let modified, modified > cutoff {
+            survivors.append(name)
+            continue
+        }
         try? fileManager.removeItem(at: url)
+    }
+
+    guard survivors.count >= spoolCap else { return }
+    for name in survivors.prefix(survivors.count - spoolCap + 1) {
+        try? fileManager.removeItem(at: spoolDirectory.appendingPathComponent(name))
     }
 }
 
