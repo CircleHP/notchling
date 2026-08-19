@@ -58,12 +58,18 @@ misclick, because there is no floating window:
   not flagged and a `Read` that never returns is flagged in 45 seconds.
 - **`done 4m ago`** on settled rows, so "just finished, go look" is distinguishable from "cold since
   lunch".
-- **Plan usage and per-session context**, optionally.
+- **The name Claude gave it.** A session shows the title Claude derives from the conversation — what
+  `claude --resume` lists — rather than a slug that identifies nothing when three are open. A name you
+  set yourself always wins, and `/color` puts a coloured bar down the row.
+- **Plan usage and per-session context**, optionally. Account-wide limits read the same whichever
+  session is on screen.
 - **On every screen.** A notched display uses the real notch; every other screen gets a drawn one, same
   shape and behaviour.
 
-It sends nothing anywhere. No network calls, no telemetry, no reading of transcripts. At rest it costs
-0.0–0.1% CPU.
+It sends nothing anywhere: no network calls, no telemetry, nothing written outside its own directories
+and `~/.claude/settings.json`. It does read one thing from a session's transcript — the title Claude
+derives and a colour set with `/color`, both recorded nowhere else — by scanning backwards from the end
+for those two entries. That happens on your machine and stays there. At rest it costs 0.0–0.1% CPU.
 
 ## Install
 
@@ -128,7 +134,8 @@ brew services restart notchling
 ```
 
 The restart is not optional: Homebrew replaces the files but leaves the running app alone, so the
-widget keeps running the version it started with until something restarts it.
+widget keeps running the version it started with until something restarts it. From 1.1.0 the panel says
+so — it notices a version on disk that is not the one it is running, and offers to restart into it.
 
 Nothing needs rewiring. The hooks record `$(brew --prefix)/bin/notchling-hook` and the status line the
 `opt` path, both of which Homebrew repoints at the new version. On the plugin route, `/plugin update
