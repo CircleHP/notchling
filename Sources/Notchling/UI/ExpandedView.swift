@@ -11,8 +11,9 @@ struct ExpandedView: View {
     /// repeat the same inset ends up on a different edge.
     static let contentInset: CGFloat = 7
 
-    /// Unscaled. `WidgetPresenter` needs this before any view exists, to size the window.
-    static let panelWidth: CGFloat = 380
+    /// Unscaled. `WidgetPresenter` needs this before any view exists, to size the window — and
+    /// `WidgetWindowGeometry` is a plain struct with no actor, which is why this says so explicitly.
+    nonisolated static let panelWidth: CGFloat = 380
 
     let store: SessionStore
     let onFocus: (Session) -> Void

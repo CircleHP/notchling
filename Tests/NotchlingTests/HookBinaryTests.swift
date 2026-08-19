@@ -341,6 +341,34 @@ struct HookBinaryTests {
                 "a half-written file belongs to another hook")
     }
 
+    @Test("a spool it cannot write to still means silent stdout and exit zero")
+    func readOnlySpool() throws {
+        let home = makeTempDirectory()
+        let fileManager = FileManager.default
+        let spool = home.appendingPathComponent(".notchling/events")
+        try fileManager.createDirectory(at: spool, withIntermediateDirectories: true)
+
+        // Permissions changed by hand, or a full disk. The contract this protects is the one that can
+        // break a user's session rather than just the widget: Claude Code acts on hook stdout, and a
+        // non-zero exit is a hook failure.
+        try fileManager.setAttributes([.posixPermissions: 0o500], ofItemAtPath: spool.path)
+        defer {
+            try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: spool.path)
+            try? fileManager.removeItem(at: home)
+        }
+
+        let result = try runHook([
+            "hook_event_name": "UserPromptSubmit", "session_id": "s1", "prompt": "hello",
+        ], home: home)
+
+        #expect(result.stdout.isEmpty, "anything on stdout can alter session behaviour")
+        #expect(result.stderr.isEmpty)
+        #expect(result.status == 0, "a widget that cannot record an event must not fail the hook")
+
+        let left = try fileManager.contentsOfDirectory(atPath: spool.path)
+        #expect(left.isEmpty, "nothing written, and no temp file left behind either")
+    }
+
     @Test("no partial files are left behind")
     func noTempFilesLeft() throws {
         let home = makeTempDirectory()
