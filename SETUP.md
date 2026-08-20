@@ -141,9 +141,9 @@ the remover refuses to delete one — so both are safe to run if you already hav
 
 **This needs a session restart, and nothing does it for you.** Claude Code reads `statusLine` at
 session start, exactly as it reads hooks, so adding it from inside a live session does nothing for that
-session however long you wait. Restart it; `~/.notchling/usage.json` appears
-the first time a restarted session renders its status line, and the bars are drawn in the **expanded
-panel** rather than on the compact strip, so open the notch to see them.
+session however long you wait. Restart it; a file appears under `~/.notchling/usage/` the first time a
+restarted session renders its status line, and the bars are drawn in the **expanded panel** rather than
+on the compact strip, so open the notch to see them.
 
 Because a status line only runs while its session is on screen, these numbers go stale when nothing is
 running. The panel dims them and says so rather than presenting old numbers as current.
