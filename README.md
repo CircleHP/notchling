@@ -136,7 +136,9 @@ brew services restart notchling
 
 The restart is not optional: Homebrew replaces the files but leaves the running app alone, so the
 widget keeps running the version it started with until something restarts it. From 1.1.0 the panel says
-so — it notices a version on disk that is not the one it is running, and offers to restart into it.
+so too — it notices a version on disk that is not the one it is running, and offers to restart into it —
+but it looks every six hours rather than continuously, so an upgrade can land long before it is
+mentioned. Restart rather than wait to be told.
 
 Nothing needs rewiring. The hooks record `$(brew --prefix)/bin/notchling-hook` and the status line the
 `opt` path, both of which Homebrew repoints at the new version. On the plugin route, `/plugin update
