@@ -1241,3 +1241,154 @@ struct PanelLayoutTests {
         #expect(plain.activityLine() == "Edit · Session.swift", "no agents, no change")
     }
 }
+
+/// The reader answers on the main actor after a hop through its own queue, and skips a read while
+/// one is already running — so a test has to give that hop somewhere to land and keep asking, the
+/// way the app does by rescanning the registry every couple of seconds. The timeout is only here so
+/// a failure fails instead of hanging.
+@MainActor
+private func settle(
+    _ store: SessionStore,
+    registry entry: RegistryEntry,
+    timeout: TimeInterval = 3,
+    until condition: () -> Bool
+) async -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if condition() { return true }
+        store.apply(registry: [entry])
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+    return condition()
+}
+
+/// End to end over real files, because the defect these cover was never in one function: every rule
+/// held on its own, and the name still degraded once Claude Code renamed the session underneath us.
+@Suite("SessionStore — where a session's name comes from")
+@MainActor
+struct SessionNameSourceTests {
+    private func transcript(_ lines: [String]) -> String {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchling-naming-\(UUID().uuidString).jsonl")
+        try! lines.joined(separator: "\n").appending("\n").write(to: url, atomically: true, encoding: .utf8)
+        return url.path
+    }
+
+    private func append(_ line: String, to path: String) {
+        let handle = try! FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try! handle.seekToEnd()
+        handle.write(Data(line.appending("\n").utf8))
+        try! handle.close()
+    }
+
+    private func started(_ path: String) -> SessionStore {
+        let store = SessionStore()
+        store.apply(hookEvent("SessionStart", session: "s1", ["transcriptPath": path]))
+        return store
+    }
+
+    @Test("the registry's slug shows until the transcript has a title")
+    func slugUntilTitled() async {
+        let path = transcript([#"{"type":"user","message":{"role":"user"}}"#])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let entry = registryEntry(session: "s1", name: "proj-1a")
+
+        let store = started(path)
+        store.apply(registry: [entry])
+        #expect(store.sessions.first?.displayName == "proj-1a")
+
+        append(#"{"type":"ai-title","aiTitle":"Ship app via Homebrew","sessionId":"s1"}"#, to: path)
+        #expect(await settle(store, registry: entry) {
+            store.sessions.first?.displayName == "Ship app via Homebrew"
+        })
+    }
+
+    /// The one a user reported: two sessions wanting the same name are renamed by Claude Code, which
+    /// records that in the registry and nowhere else. Reading the registry as a person's choice took
+    /// the title back off every session in a project at once, and never gave it back.
+    @Test("a collision rename cannot take the title back")
+    func collisionRename() async {
+        let path = transcript([#"{"type":"ai-title","aiTitle":"Ship app via Homebrew","sessionId":"s1"}"#])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let entry = registryEntry(session: "s1", name: "proj-1a")
+
+        let store = started(path)
+        #expect(await settle(store, registry: entry) {
+            store.sessions.first?.displayName == "Ship app via Homebrew"
+        })
+
+        store.apply(registry: [registryEntry(session: "s1", name: "proj-2b")])
+        #expect(store.sessions.first?.name == "proj-2b", "the rename is recorded")
+        #expect(store.sessions.first?.displayName == "Ship app via Homebrew", "but it is not the name")
+    }
+
+    @Test("a name a person set outranks the title Claude derives")
+    func chosenNameWins() async {
+        let path = transcript([
+            #"{"type":"ai-title","aiTitle":"Ship app via Homebrew","sessionId":"s1"}"#,
+            #"{"type":"custom-title","customTitle":"release work","sessionId":"s1"}"#,
+        ])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let entry = registryEntry(session: "s1", name: "proj-1a")
+
+        let store = started(path)
+        #expect(await settle(store, registry: entry) {
+            store.sessions.first?.displayName == "release work"
+        })
+    }
+
+    /// Claude keeps retitling the conversation after a person has named it, so the newer record is
+    /// the one that must lose here — the only place in the reader where newest does not win.
+    @Test("a title written after the name does not replace it")
+    func titleAfterNameLoses() async {
+        let path = transcript([#"{"type":"custom-title","customTitle":"release work","sessionId":"s1"}"#])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let entry = registryEntry(session: "s1", name: "proj-1a")
+
+        let store = started(path)
+        #expect(await settle(store, registry: entry) {
+            store.sessions.first?.displayName == "release work"
+        })
+
+        append(#"{"type":"ai-title","aiTitle":"Something else entirely","sessionId":"s1"}"#, to: path)
+        #expect(await settle(store, registry: entry) {
+            store.sessions.first?.aiTitle == "Something else entirely"
+        })
+        #expect(store.sessions.first?.displayName == "release work")
+    }
+
+    @Test("a background job keeps its registry name whatever the transcript says")
+    func backgroundKeepsItsName() async {
+        let path = transcript([
+            #"{"type":"custom-title","customTitle":"release work","sessionId":"s1"}"#,
+            #"{"type":"ai-title","aiTitle":"Investigating CI failures","sessionId":"s1"}"#,
+        ])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let entry = registryEntry(session: "s1", name: "fix the flaky test", kind: "bg")
+
+        let store = started(path)
+        #expect(await settle(store, registry: entry) {
+            store.sessions.first?.customTitle == "release work"
+        })
+        #expect(store.sessions.first?.displayName == "fix the flaky test")
+    }
+
+    /// The sibling behaviour, kept here because it broke once already: reading three marks instead of
+    /// two must not stop a later `/color` from landing.
+    @Test("a colour set later still reaches the row")
+    func colourFollows() async {
+        let path = transcript([#"{"type":"ai-title","aiTitle":"Ship it","sessionId":"s1"}"#])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let entry = registryEntry(session: "s1", name: "proj-1a")
+
+        let store = started(path)
+        #expect(await settle(store, registry: entry) { store.sessions.first?.aiTitle == "Ship it" })
+        #expect(store.sessions.first?.colorName == nil)
+
+        append(#"{"type":"agent-color","agentColor":"green","sessionId":"s1"}"#, to: path)
+        #expect(await settle(store, registry: entry) { store.sessions.first?.colorName == "green" })
+
+        append(#"{"type":"agent-color","agentColor":"pink","sessionId":"s1"}"#, to: path)
+        #expect(await settle(store, registry: entry) { store.sessions.first?.colorName == "pink" })
+    }
+}

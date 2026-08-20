@@ -422,7 +422,6 @@ final class SessionStore {
             session.pid = entry.pid
             // A missing field means the registry did not report it, not that it was cleared.
             if let name = entry.name { session.name = name }
-            if let nameSource = entry.nameSource { session.nameSource = nameSource }
             if let cwd = entry.cwd { session.cwd = cwd }
             if let kind = entry.kind.flatMap(SessionKind.init(rawValue:)) { session.kind = kind }
             if let jobID = entry.jobId { session.jobID = jobID }
@@ -526,6 +525,7 @@ final class SessionStore {
 
         transcripts.read(sessionID: sessionID, path: path) { [weak self] marks in
             guard let self, var session = self.index[sessionID] else { return }
+            if let custom = marks.customTitle { session.customTitle = custom }
             if let title = marks.title { session.aiTitle = title }
             if let colour = marks.colorName { session.colorName = colour }
             self.index[sessionID] = session
