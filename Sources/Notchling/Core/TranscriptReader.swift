@@ -7,6 +7,7 @@
 //
 //      {"type":"ai-title","aiTitle":"Ship app via Homebrew instead of source","sessionId":"…"}
 //      {"type":"agent-color","agentColor":"green","sessionId":"…"}
+//      {"type":"custom-title","customTitle":"release work","sessionId":"…"}
 //
 //  Rewritten as they change, so the last entry of each type wins. The transcript is append-only and
 //  can reach tens of megabytes, so it is read backwards in bounded chunks and never parsed whole.
@@ -15,29 +16,35 @@
 import Foundation
 
 struct TranscriptMarks: Equatable {
+    /// The name a person set with `/rename` or `--name`. Claude Code writes this record only for a
+    /// rename a person asked for: an `"auto"` rename appends an `ai-title` instead, and a collision
+    /// rename touches nothing but the registry.
+    var customTitle: String?
     var title: String?
     var colorName: String?
 
-    var isEmpty: Bool { title == nil && colorName == nil }
+    var isEmpty: Bool { customTitle == nil && title == nil && colorName == nil }
+    /// Nothing further back can change the answer, so the scan can stop.
+    var isComplete: Bool { customTitle != nil && title != nil && colorName != nil }
 }
 
 /// How much of one transcript has been examined, and what it yielded.
 struct TranscriptScan: Equatable {
     var marks: TranscriptMarks
-    /// Everything from here to the end of the file has been read. Only what arrives after it can
-    /// change the answer.
-    var searchedFrom: UInt64
+    /// How big the file was when it was last read. Only what arrives above this can change the
+    /// answer; everything below it is already summarised by `marks`.
+    var readTo: UInt64
 }
 
 @MainActor
 final class TranscriptReader {
-    /// Read from the end in chunks this size, stopping as soon as both marks are found.
+    /// Read from the end in chunks this size, stopping as soon as every mark is found.
     nonisolated static let chunkSize = 256 * 1024
     /// A colour set at the start of a long session is a long way back, but not unboundedly so. Past
     /// this, treat it as absent rather than reading an entire conversation off disk.
     nonisolated static let maxBytesScanned = 4 * 1024 * 1024
 
-    /// A line longer than this is not one of the two we are looking for, and carrying it between
+    /// A line longer than this is not one of the three we are looking for, and carrying it between
     /// chunks is what would make a single enormous line cost more than the scan itself.
     nonisolated static let maxLineLength = 64 * 1024
 
@@ -46,13 +53,13 @@ final class TranscriptReader {
     /// Modification date of the last transcript read, per session. Transcripts grow constantly, so
     /// re-reading an unchanged one is pure waste.
     private var lastModified: [String: Date] = [:]
-    /// What the last read found, and how far back it had to look to be sure.
+    /// What the last read found, and where the file ended when it found it.
     ///
-    /// Without this every session that has never set a colour re-reads the whole tail on every
-    /// change: the scan only stops early when *both* marks are found, so a mark that is simply not
-    /// in the file is never found and the search runs to its limit. Transcripts change on every
-    /// message, so that is a few megabytes parsed every couple of seconds, for an answer that cannot
-    /// have changed except in the bytes appended since.
+    /// Without this every session missing any one mark re-reads the whole tail on every change: the
+    /// scan only stops early when *every* mark is found, so a mark that is simply not in the file is
+    /// never found and the search runs to its limit. Transcripts change on every message, so that is
+    /// a few megabytes parsed every couple of seconds, for an answer that cannot have changed except
+    /// in the bytes appended since.
     private var progress: [String: TranscriptScan] = [:]
 
     /// Where Claude Code keeps a session's transcript when the hook payload did not name it: the cwd
@@ -104,28 +111,31 @@ final class TranscriptReader {
 
     /// Reads backwards from the end, far enough to answer and no further.
     ///
-    /// `previous` is what the last scan of this file returned: its `searchedFrom` marks ground that
-    /// has already been read, so only what arrived after it can change the answer.
+    /// `previous` is what the last scan of this file returned: its `readTo` is where the file ended
+    /// then, so only what arrived above it can change the answer.
     ///
-    /// The newly arrived part is always read, whatever was already known. Both marks are *rewritten*
-    /// as they change — a second `/color` appends another entry rather than editing the first — so a
-    /// scan that stopped because it already had both would freeze a session's colour and title for
-    /// the rest of its life. What the new region does not mention is filled in from `previous`, which
+    /// The newly arrived part is always read, whatever was already known. Every mark is *rewritten*
+    /// as it changes — a second `/color` appends another entry rather than editing the first — so a
+    /// scan that stopped because it already had them all would freeze a session's name, title and
+    /// colour for the rest of its life. What the new region does not mention is filled in from `previous`, which
     /// is the only thing the earlier ground can still tell us.
     nonisolated static func scan(fileAt path: String, after previous: TranscriptScan?) -> TranscriptScan {
         guard let handle = FileHandle(forReadingAtPath: path) else {
-            return previous ?? TranscriptScan(marks: TranscriptMarks(), searchedFrom: 0)
+            return previous ?? TranscriptScan(marks: TranscriptMarks(), readTo: 0)
         }
         defer { try? handle.close() }
         guard let end = try? handle.seekToEnd() else {
-            return previous ?? TranscriptScan(marks: TranscriptMarks(), searchedFrom: 0)
+            return previous ?? TranscriptScan(marks: TranscriptMarks(), readTo: 0)
         }
 
-        // A file that shrank was replaced rather than appended to, so nothing known about it holds.
-        let carried = (previous?.searchedFrom ?? 0) > end ? nil : previous
-        let searched = carried?.searchedFrom ?? 0
-        // One line of overlap, so an entry straddling the boundary is not missed by both scans.
-        let floor = searched > UInt64(maxLineLength) ? searched - UInt64(maxLineLength) : 0
+        // A file smaller than when it was last read was replaced rather than appended to, so nothing
+        // known about it holds.
+        let carried = (previous?.readTo ?? 0) > end ? nil : previous
+        // Only the bytes that arrived since the last read can change the answer, plus one line of
+        // overlap so an entry straddling the boundary is not missed by both scans. Without this the
+        // scan walks back to the byte limit on every change to a file that changes every message.
+        let boundary = carried?.readTo ?? 0
+        let floor = boundary > UInt64(maxLineLength) ? boundary - UInt64(maxLineLength) : 0
 
         // Deliberately fresh rather than seeded with what is already known: `absorb` keeps the first
         // value it sees, reading backwards, so seeding it would make the older entry win.
@@ -136,7 +146,7 @@ final class TranscriptReader {
         // each chunk is carried into the next one, which is read earlier in the file.
         var carry = Data()
 
-        while offset > floor, scanned < maxBytesScanned, found.title == nil || found.colorName == nil {
+        while offset > floor, scanned < maxBytesScanned, !found.isComplete {
             let size = UInt64(min(UInt64(chunkSize), offset - floor))
             offset -= size
             guard (try? handle.seek(toOffset: offset)) != nil,
@@ -160,18 +170,19 @@ final class TranscriptReader {
             for line in complete.reversed() {
                 guard !line.isEmpty, line.count <= maxLineLength else { continue }
                 absorb(line: Data(line), into: &found)
-                if found.title != nil, found.colorName != nil { break }
+                if found.isComplete { break }
             }
         }
 
         // Whatever the new ground did not mention still stands from the last time it was read.
+        if found.customTitle == nil { found.customTitle = carried?.marks.customTitle }
         if found.title == nil { found.title = carried?.marks.title }
         if found.colorName == nil { found.colorName = carried?.marks.colorName }
 
-        return TranscriptScan(marks: found, searchedFrom: min(offset, searched))
+        return TranscriptScan(marks: found, readTo: end)
     }
 
-    /// Only the two entry types matter, and only the newest of each — so a value already found is
+    /// Only these three entry types matter, and only the newest of each — so a value already found is
     /// never overwritten by an older line.
     private nonisolated static func absorb(line: Data, into found: inout TranscriptMarks) {
         guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
@@ -179,6 +190,10 @@ final class TranscriptReader {
         else { return }
 
         switch type {
+        case "custom-title":
+            if found.customTitle == nil, let name = object["customTitle"] as? String, !name.isEmpty {
+                found.customTitle = name
+            }
         case "ai-title":
             if found.title == nil, let title = object["aiTitle"] as? String, !title.isEmpty {
                 found.title = title

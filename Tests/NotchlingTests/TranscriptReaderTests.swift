@@ -64,10 +64,10 @@ struct TranscriptReaderTests {
         #expect(TranscriptReader.scan(fileAt: path, after: nil).marks.title == "early title")
     }
 
-    /// The reason the scan is incremental: the loop only stops early when *both* marks are found, so
-    /// a session that never set a colour never finds one and runs to the byte limit — on every change
-    /// to a file that changes with every message.
-    @Test("a second scan starts where the first one stopped")
+    /// The reason the scan is incremental: the loop only stops when *every* mark is found, and no
+    /// real session has all three, so an unbounded scan reads to the byte limit on every change to a
+    /// file that changes with every message. Proven by editing ground the second scan must not touch.
+    @Test("a second scan reads only what was appended")
     func onlyReadsWhatIsNew() {
         let filler = String(repeating: "x", count: 4_000)
         var lines = [#"{"type":"ai-title","aiTitle":"first","sessionId":"s"}"#]
@@ -77,20 +77,21 @@ struct TranscriptReaderTests {
         let path = writeTranscript(lines)
         defer { try? FileManager.default.removeItem(atPath: path) }
 
-        // No colour in the file, so this one runs all the way to the start.
         let first = TranscriptReader.scan(fileAt: path, after: nil)
         #expect(first.marks.title == "first")
-        #expect(first.marks.colorName == nil)
-        #expect(first.searchedFrom == 0, "having reached the start, there is nothing left below")
+        #expect(first.marks.colorName == nil, "no colour in the file, so this one ran to the start")
 
+        // Same length, so every offset after it still stands: a second scan that reached back this
+        // far would report "ghost".
         let handle = try! FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        handle.write(Data(#"{"type":"ai-title","aiTitle":"ghost","sessionId":"s"}"#.utf8))
         try! handle.seekToEnd()
         handle.write(Data(#"{"type":"agent-color","agentColor":"green","sessionId":"s"}\#n"#.utf8))
         try! handle.close()
 
         let second = TranscriptReader.scan(fileAt: path, after: first)
         #expect(second.marks.colorName == "green", "the appended mark is picked up")
-        #expect(second.marks.title == "first", "and what was already known is kept")
+        #expect(second.marks.title == "first", "and the old ground is not read again")
     }
 
     /// The one a live session actually hits: both marks are known, then the user runs `/color` again.
@@ -149,7 +150,7 @@ struct TranscriptReaderTests {
         try! #"{"type":"ai-title","aiTitle":"new","sessionId":"s"}"#
             .write(toFile: path, atomically: true, encoding: .utf8)
 
-        let stale = TranscriptScan(marks: first.marks, searchedFrom: 10_000)
+        let stale = TranscriptScan(marks: first.marks, readTo: 10_000)
         #expect(TranscriptReader.scan(fileAt: path, after: stale).marks.title == "new")
     }
 
@@ -168,6 +169,21 @@ struct TranscriptReaderTests {
         let marks = TranscriptReader.scan(fileAt: path, after: nil).marks
         #expect(marks.colorName == "blue")
         #expect(marks.title == "kept")
+    }
+
+    /// An `"auto"` rename appends an `ai-title`; only a rename a person asked for appends a
+    /// `custom-title`. Conflating them is what let a machine name outrank the conversation's.
+    @Test("a name a person set is read apart from the title Claude derives")
+    func customTitleIsItsOwnMark() {
+        let path = writeTranscript([
+            #"{"type":"ai-title","aiTitle":"Ship app via Homebrew","sessionId":"s"}"#,
+            #"{"type":"custom-title","customTitle":"release work","sessionId":"s"}"#,
+        ])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let marks = TranscriptReader.scan(fileAt: path, after: nil).marks
+        #expect(marks.customTitle == "release work")
+        #expect(marks.title == "Ship app via Homebrew")
     }
 
     @Test("a transcript path is derived from cwd when the hook did not name one")

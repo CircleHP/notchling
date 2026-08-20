@@ -98,8 +98,10 @@ struct Session: Identifiable, Equatable, ToolTracking {
     var tty: String?
     var processCommand: String?
 
-    /// From the registry: `"derived"` when Claude Code made the name up, absent when a person set it.
-    var nameSource: String?
+    /// A name a person set with `/rename` or `--name`, read from the transcript. The registry's
+    /// `name` cannot answer this: Claude Code writes collision and auto renames there too, and marks
+    /// neither in a way that survives — which is how a session's title degraded to its slug.
+    var customTitle: String?
     /// The title Claude derives from the conversation — what `claude --resume` lists. Read from the
     /// transcript, because it is recorded nowhere else.
     var aiTitle: String?
@@ -120,14 +122,19 @@ struct Session: Identifiable, Equatable, ToolTracking {
     }
 
     /// A name someone chose beats one anything derived, and `notchling-1a` identifies nothing when
-    /// three sessions are open. So: the user's name, then the title Claude derives from the
-    /// conversation, then the registry's slug while the session is too young to have either.
+    /// three sessions are open. So: the name a person set, then the title Claude derives from the
+    /// conversation, then the registry's name while the session is too young to have either.
+    ///
+    /// The first two come from the transcript because that is the only place Claude Code records who
+    /// named a session. The registry's `name` is only ever whatever it currently holds — a startup
+    /// slug, an auto rename, or a collision rename — so it cannot outrank either of them.
     ///
     /// Background jobs keep the registry name unconditionally — for those it is the task's own title,
     /// which is already the best name available.
     var displayName: String {
-        if let name, !name.isEmpty, nameSource != "derived" { return name }
-        if kind != .bg, let aiTitle, !aiTitle.isEmpty { return aiTitle }
+        if kind == .bg, let name, !name.isEmpty { return name }
+        if let customTitle, !customTitle.isEmpty { return customTitle }
+        if let aiTitle, !aiTitle.isEmpty { return aiTitle }
         if let name, !name.isEmpty { return name }
         if let cwd, !cwd.isEmpty { return URL(fileURLWithPath: cwd).lastPathComponent }
         return String(sessionID.prefix(8))

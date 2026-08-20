@@ -15,8 +15,6 @@ struct RegistryEntry: Decodable {
     var sessionId: String
     var cwd: String?
     var name: String?
-    /// `"derived"` for the slug Claude Code generates; anything else means a person chose it.
-    var nameSource: String?
     var kind: String?
     var status: String?
     var jobId: String?
