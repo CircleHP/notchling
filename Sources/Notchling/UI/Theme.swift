@@ -43,12 +43,19 @@ enum Theme {
 
     // MARK: - Session colour
 
-    /// A colour a user set with `/color`, mapped from the palette Claude Code offers.
+    /// A colour a user set with `/color`.
     ///
-    /// The names are not documented anywhere, so this list is what has actually been seen in
-    /// transcripts. A name that is not here still draws a bar, in a neutral tone — the palette can
-    /// grow without this knowing, and a session the user deliberately marked should not look
-    /// unmarked. To check what is in use:
+    /// The palette is undocumented, so this covers both halves of the evidence: the names Claude Code
+    /// maps to tmux pane colours — cyan, blue, green, purple, orange, pink — and the ones that turn up
+    /// in transcripts, which adds red. The ANSI aliases below cost nothing and mean a name arriving
+    /// from somewhere else still lands somewhere sensible.
+    ///
+    /// These are not Claude Code's own values and cannot be: it renders them as *terminal* colours, so
+    /// what they look like depends on the terminal's theme. The widget draws on its own black chrome
+    /// and has to pick tones that read there.
+    ///
+    /// A name that is not here still draws a bar, in a neutral tone: a session the user deliberately
+    /// marked should never look unmarked. To check what is actually in use:
     ///
     ///     grep -ho '"agentColor":"[^"]*"' ~/.claude/projects/*/*.jsonl | sort | uniq -c
     static func sessionColor(named name: String?) -> Color? {
@@ -61,6 +68,9 @@ enum Theme {
         case "orange": Color(red: 240 / 255, green: 145 / 255, blue: 70 / 255)
         case "blue": Color(red: 100 / 255, green: 160 / 255, blue: 235 / 255)
         case "magenta", "pink": Color(red: 210 / 255, green: 120 / 255, blue: 200 / 255)
+        // Claude Code maps `purple` onto tmux's magenta, but it offers both names, so two sessions
+        // marked differently have to look different here.
+        case "purple", "violet": Color(red: 165 / 255, green: 135 / 255, blue: 230 / 255)
         case "cyan": Color(red: 100 / 255, green: 200 / 255, blue: 210 / 255)
         case "white": ink
         case "gray", "grey": dim
