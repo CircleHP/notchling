@@ -1,7 +1,7 @@
 {
   "name": "notchling",
   "description": "Reports session state to the Notchling notch widget",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "author": {
     "name": "CircleHP",
     "url": "https://github.com/CircleHP"
