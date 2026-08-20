@@ -93,6 +93,50 @@ struct TranscriptReaderTests {
         #expect(second.marks.title == "first", "and what was already known is kept")
     }
 
+    /// The one a live session actually hits: both marks are known, then the user runs `/color` again.
+    /// A scan that stops early because it already has both never looks at what was appended, and the
+    /// row keeps the colour it was first given for the rest of the session.
+    @Test("a colour changed after both marks are known is still picked up")
+    func changedColourIsPickedUp() {
+        let path = writeTranscript([
+            #"{"type":"ai-title","aiTitle":"Ship it","sessionId":"s"}"#,
+            #"{"type":"agent-color","agentColor":"cyan","sessionId":"s"}"#,
+        ])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let first = TranscriptReader.scan(fileAt: path, after: nil)
+        #expect(first.marks.colorName == "cyan")
+        #expect(first.marks.title == "Ship it")
+
+        let handle = try! FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try! handle.seekToEnd()
+        handle.write(Data(#"{"type":"agent-color","agentColor":"green","sessionId":"s"}\#n"#.utf8))
+        try! handle.close()
+
+        let second = TranscriptReader.scan(fileAt: path, after: first)
+        #expect(second.marks.colorName == "green", "the newer entry wins")
+        #expect(second.marks.title == "Ship it", "and the title it did not repeat is kept")
+    }
+
+    @Test("a title rewritten later replaces the earlier one")
+    func changedTitleIsPickedUp() {
+        let path = writeTranscript([
+            #"{"type":"ai-title","aiTitle":"First guess","sessionId":"s"}"#,
+            #"{"type":"agent-color","agentColor":"blue","sessionId":"s"}"#,
+        ])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let first = TranscriptReader.scan(fileAt: path, after: nil)
+        let handle = try! FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try! handle.seekToEnd()
+        handle.write(Data(#"{"type":"ai-title","aiTitle":"What it turned out to be","sessionId":"s"}\#n"#.utf8))
+        try! handle.close()
+
+        let second = TranscriptReader.scan(fileAt: path, after: first)
+        #expect(second.marks.title == "What it turned out to be")
+        #expect(second.marks.colorName == "blue")
+    }
+
     @Test("a transcript replaced with a shorter one is read again from scratch")
     func shrunkFileIsRescanned() {
         let path = writeTranscript([#"{"type":"ai-title","aiTitle":"old","sessionId":"s"}"#])

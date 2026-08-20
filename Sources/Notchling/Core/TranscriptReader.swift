@@ -102,12 +102,16 @@ final class TranscriptReader {
 
     // MARK: - Reading
 
-    /// Reads backwards from the end, stopping as soon as both marks are found — or as soon as it
-    /// reaches ground a previous scan already covered, since nothing there can have changed.
+    /// Reads backwards from the end, far enough to answer and no further.
     ///
-    /// `previous` is what the last scan of this file returned. Its marks are the starting point, and
-    /// its `searchedFrom` is the floor: on a file that has grown by one message, that leaves one
-    /// chunk to read instead of the whole limit.
+    /// `previous` is what the last scan of this file returned: its `searchedFrom` marks ground that
+    /// has already been read, so only what arrived after it can change the answer.
+    ///
+    /// The newly arrived part is always read, whatever was already known. Both marks are *rewritten*
+    /// as they change — a second `/color` appends another entry rather than editing the first — so a
+    /// scan that stopped because it already had both would freeze a session's colour and title for
+    /// the rest of its life. What the new region does not mention is filled in from `previous`, which
+    /// is the only thing the earlier ground can still tell us.
     nonisolated static func scan(fileAt path: String, after previous: TranscriptScan?) -> TranscriptScan {
         guard let handle = FileHandle(forReadingAtPath: path) else {
             return previous ?? TranscriptScan(marks: TranscriptMarks(), searchedFrom: 0)
@@ -117,17 +121,15 @@ final class TranscriptReader {
             return previous ?? TranscriptScan(marks: TranscriptMarks(), searchedFrom: 0)
         }
 
-        var found = previous?.marks ?? TranscriptMarks()
-
         // A file that shrank was replaced rather than appended to, so nothing known about it holds.
-        var floor = previous?.searchedFrom ?? 0
-        if floor > end {
-            found = TranscriptMarks()
-            floor = 0
-        }
-        // One line of overlap, so a line straddling the boundary is not missed by both scans.
-        floor = floor > UInt64(maxLineLength) ? floor - UInt64(maxLineLength) : 0
+        let carried = (previous?.searchedFrom ?? 0) > end ? nil : previous
+        let searched = carried?.searchedFrom ?? 0
+        // One line of overlap, so an entry straddling the boundary is not missed by both scans.
+        let floor = searched > UInt64(maxLineLength) ? searched - UInt64(maxLineLength) : 0
 
+        // Deliberately fresh rather than seeded with what is already known: `absorb` keeps the first
+        // value it sees, reading backwards, so seeding it would make the older entry win.
+        var found = TranscriptMarks()
         var offset = end
         var scanned = 0
         // A line straddling a chunk boundary would parse as two broken halves, so the leftover head of
@@ -162,9 +164,11 @@ final class TranscriptReader {
             }
         }
 
-        // Only claim ground actually covered: a scan stopped by `maxBytesScanned` has not seen
-        // everything below `offset`, and saying otherwise would skip it for ever.
-        return TranscriptScan(marks: found, searchedFrom: offset)
+        // Whatever the new ground did not mention still stands from the last time it was read.
+        if found.title == nil { found.title = carried?.marks.title }
+        if found.colorName == nil { found.colorName = carried?.marks.colorName }
+
+        return TranscriptScan(marks: found, searchedFrom: min(offset, searched))
     }
 
     /// Only the two entry types matter, and only the newest of each — so a value already found is

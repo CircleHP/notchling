@@ -191,3 +191,32 @@ struct TerminalFocusTests {
         #expect(!TerminalFocus.canFocusPrecisely(session()))
     }
 }
+
+@Suite("Theme — session colours")
+struct SessionColourTests {
+    /// Every name Claude Code is known to offer: the six it maps to tmux pane colours, plus red,
+    /// which does not appear there but does appear in transcripts.
+    @Test("every colour Claude Code offers resolves to a distinct one", arguments: [
+        "red", "green", "blue", "cyan", "purple", "orange", "pink",
+    ])
+    func offeredColoursResolve(name: String) {
+        #expect(Theme.sessionColor(named: name) != nil)
+        #expect(Theme.sessionColor(named: name) != Theme.inkSecondary,
+                "\(name) must have its own hue, not the fallback for names we have never seen")
+    }
+
+    @Test("the offered colours are all different from each other")
+    func offeredColoursAreDistinct() {
+        let names = ["red", "green", "blue", "cyan", "purple", "orange", "pink"]
+        let colours = names.compactMap { Theme.sessionColor(named: $0) }
+        #expect(Set(colours.map(String.init(describing:))).count == names.count)
+    }
+
+    @Test("case does not matter, and a name we do not know still marks the row")
+    func unknownAndCasing() {
+        #expect(Theme.sessionColor(named: "ORANGE") == Theme.sessionColor(named: "orange"))
+        #expect(Theme.sessionColor(named: "chartreuse") == Theme.inkSecondary)
+        #expect(Theme.sessionColor(named: nil) == nil, "no colour set is not the same as one we cannot place")
+        #expect(Theme.sessionColor(named: "") == nil)
+    }
+}
