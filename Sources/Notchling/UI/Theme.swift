@@ -43,14 +43,22 @@ enum Theme {
 
     // MARK: - Session colour
 
-    /// A colour a user set with `/color`, mapped from the terminal palette Claude Code offers. Unknown
-    /// names return nil rather than a guess: no marker is better than the wrong one, and the palette
-    /// can grow without this having to know.
+    /// A colour a user set with `/color`, mapped from the palette Claude Code offers.
+    ///
+    /// The names are not documented anywhere, so this list is what has actually been seen in
+    /// transcripts. A name that is not here still draws a bar, in a neutral tone — the palette can
+    /// grow without this knowing, and a session the user deliberately marked should not look
+    /// unmarked. To check what is in use:
+    ///
+    ///     grep -ho '"agentColor":"[^"]*"' ~/.claude/projects/*/*.jsonl | sort | uniq -c
     static func sessionColor(named name: String?) -> Color? {
         switch name?.lowercased() {
         case "red": red
         case "green": green
         case "yellow", "amber": amber
+        // Its own hue rather than folded into amber: `orange` and `yellow` are both offered, and two
+        // sessions marked differently must not come out looking the same.
+        case "orange": Color(red: 240 / 255, green: 145 / 255, blue: 70 / 255)
         case "blue": Color(red: 100 / 255, green: 160 / 255, blue: 235 / 255)
         case "magenta", "pink": Color(red: 210 / 255, green: 120 / 255, blue: 200 / 255)
         case "cyan": Color(red: 100 / 255, green: 200 / 255, blue: 210 / 255)
