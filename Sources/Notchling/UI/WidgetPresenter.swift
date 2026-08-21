@@ -18,10 +18,7 @@ final class WidgetPresenter {
 
     private let store: SessionStore
     private let onHoverChange: () -> Void
-    private let onFocus: (Session) -> Void
-    private let onStop: () -> Void
-    private let onRestart: () -> Void
-    private let onSettings: () -> Void
+    private let actions: WidgetActions
 
     private var panel: WidgetPanel?
     private var state: WidgetViewState
@@ -35,18 +32,12 @@ final class WidgetPresenter {
         screen: NSScreen,
         store: SessionStore,
         onHoverChange: @escaping () -> Void,
-        onFocus: @escaping (Session) -> Void,
-        onStop: @escaping () -> Void,
-        onRestart: @escaping () -> Void,
-        onSettings: @escaping () -> Void
+        actions: WidgetActions
     ) {
         self.displayID = screen.displayID
         self.store = store
         self.onHoverChange = onHoverChange
-        self.onFocus = onFocus
-        self.onStop = onStop
-        self.onRestart = onRestart
-        self.onSettings = onSettings
+        self.actions = actions
         self.state = WidgetViewState(metrics: WidgetMetrics(screen: screen))
     }
 
@@ -148,10 +139,7 @@ final class WidgetPresenter {
             onContentGeometry: { [weak self] presentation, geometry in
                 self?.contentGeometryChanged(presentation, geometry)
             },
-            onFocus: onFocus,
-            onStop: onStop,
-            onRestart: onRestart,
-            onSettings: onSettings
+            actions: actions
         )
 
         let panel = WidgetPanel(

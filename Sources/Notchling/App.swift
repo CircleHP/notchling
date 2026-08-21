@@ -57,9 +57,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let widget = WidgetController(
             store: store,
-            onStop: { [weak self] in self?.stopWidget(nil) },
-            onRestart: { [weak self] in self?.restartIntoInstalledBuild() },
-            onSettings: { [weak self] in self?.preferences.show() }
+            actions: WidgetActions(
+                focus: { TerminalFocus.focus($0) },
+                restart: { [weak self] in self?.restartIntoInstalledBuild() },
+                stop: { [weak self] in self?.stopWidget(nil) },
+                settings: { [weak self] in self?.preferences.show() }
+            )
         )
         self.widget = widget
 
