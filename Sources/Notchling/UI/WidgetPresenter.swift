@@ -21,6 +21,7 @@ final class WidgetPresenter {
     private let onFocus: (Session) -> Void
     private let onQuit: () -> Void
     private let onRestart: () -> Void
+    private let onSettings: () -> Void
 
     private var panel: WidgetPanel?
     private var state: WidgetViewState
@@ -36,7 +37,8 @@ final class WidgetPresenter {
         onHoverChange: @escaping () -> Void,
         onFocus: @escaping (Session) -> Void,
         onQuit: @escaping () -> Void,
-        onRestart: @escaping () -> Void
+        onRestart: @escaping () -> Void,
+        onSettings: @escaping () -> Void
     ) {
         self.displayID = screen.displayID
         self.store = store
@@ -44,6 +46,7 @@ final class WidgetPresenter {
         self.onFocus = onFocus
         self.onQuit = onQuit
         self.onRestart = onRestart
+        self.onSettings = onSettings
         self.state = WidgetViewState(metrics: WidgetMetrics(screen: screen))
     }
 
@@ -147,7 +150,8 @@ final class WidgetPresenter {
             },
             onFocus: onFocus,
             onQuit: onQuit,
-            onRestart: onRestart
+            onRestart: onRestart,
+            onSettings: onSettings
         )
 
         let panel = WidgetPanel(

@@ -14,6 +14,7 @@ final class WidgetController {
     private let store: SessionStore
     private let onQuit: () -> Void
     private let onRestart: () -> Void
+    private let onSettings: () -> Void
     private let displayMode: DisplayMode
 
     private var presenters: [WidgetPresenter] = []
@@ -30,12 +31,14 @@ final class WidgetController {
         store: SessionStore,
         displayMode: DisplayMode = .current,
         onQuit: @escaping () -> Void,
-        onRestart: @escaping () -> Void
+        onRestart: @escaping () -> Void,
+        onSettings: @escaping () -> Void
     ) {
         self.store = store
         self.displayMode = displayMode
         self.onQuit = onQuit
         self.onRestart = onRestart
+        self.onSettings = onSettings
     }
 
     func start() {
@@ -167,7 +170,8 @@ final class WidgetController {
                     onHoverChange: { [weak self] in self?.hoverChanged() },
                     onFocus: { TerminalFocus.focus($0) },
                     onQuit: onQuit,
-                    onRestart: onRestart
+                    onRestart: onRestart,
+                    onSettings: onSettings
                 )
             )
         }
