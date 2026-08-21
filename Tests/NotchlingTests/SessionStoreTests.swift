@@ -615,9 +615,14 @@ struct NotificationRuleTests {
     }
 
 
-    @Test("agent_completed is a finish")
-    func agentCompleted() {
-        #expect(SessionStore.state(forNotification: event("agent_completed"), current: .working) == .done)
+    /// Raised once per background agent leaving the running band, carrying the parent's `session_id` and
+    /// no `agent_id`. Reading it as a finish is how a spawned agent returning came to sound and drop the
+    /// notch as if the user's own turn had ended.
+    @Test("agent_completed is an agent finishing, which is not a session finishing")
+    func agentCompletedSaysNothing() {
+        for state in [SessionState.working, .idle, .done, .needsYou, .error] {
+            #expect(SessionStore.state(forNotification: event("agent_completed"), current: state) == nil, "\(state)")
+        }
     }
 
 }
@@ -818,6 +823,33 @@ struct SubagentLifecycleTests {
         #expect(edges.count == 1, "only the prompt's idle → working")
         #expect(edges.first?.1 == .working)
         #expect(store.sessions.first?.state == .working, "the session is still mid-turn")
+    }
+
+    /// The other half of the same rule, and the one that was wrong. A background agent finishing arrives
+    /// as a `Notification` on the parent session rather than as `SubagentStop`, so it took the session's
+    /// own switch and marked the turn done — a sound and a peek per agent, while the turn was still going.
+    @Test("a background agent finishing is not a session finishing either")
+    func agentCompletedIsNotAnEdge() {
+        let store = SessionStore()
+        var edges: [(SessionState, SessionState)] = []
+        store.onTransition = { _, from, to in edges.append((from, to)) }
+
+        store.apply(hookEvent("UserPromptSubmit"))
+        store.apply(hookEvent("Notification", ["notificationType": "agent_completed", "message": "Explore finished"]))
+        store.apply(hookEvent("Notification", ["notificationType": "agent_completed", "message": "fork failed"]))
+
+        #expect(edges.count == 1, "only the prompt's idle → working")
+        #expect(store.sessions.first?.state == .working, "the session is still mid-turn")
+    }
+
+    /// Between turns there is no `Stop` coming to correct it, so the row sat on `done` — and decayed to
+    /// `idle` — off the back of an agent the session had merely been waiting for.
+    @Test("a background agent finishing between turns leaves an idle session idle")
+    func agentCompletedLeavesIdleAlone() {
+        let store = SessionStore()
+        store.apply(hookEvent("SessionStart"))
+        store.apply(hookEvent("Notification", ["notificationType": "agent_completed", "message": "Explore finished"]))
+        #expect(store.sessions.first?.state == .idle)
     }
 
     /// The most misleading failure available here. During a fan-out the main thread emits nothing between
