@@ -34,4 +34,7 @@ enum Log {
 
     /// Plan limits and per-session metrics, written by the status line.
     static let usage = Logger(subsystem: subsystem, category: "usage")
+
+    /// The settings window's own failures — including the one that collects everything above.
+    static let diagnostics = Logger(subsystem: subsystem, category: "diagnostics")
 }

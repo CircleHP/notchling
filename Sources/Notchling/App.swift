@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let store = SessionStore()
     private let cues = SoundCues()
+    private let preferences = PreferencesWindowController()
     private var spool: HookSpoolWatcher?
     private var registry: SessionRegistryReader?
     private var widget: WidgetController?
@@ -49,12 +50,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         loadApplicationIcon()
+        // Never drawn — an accessory app does not get the menu bar — but it is what gives the settings
+        // window its key equivalents. See `AppMenu`.
+        AppMenu.install()
         pruneStaleFiles()
 
         let widget = WidgetController(
             store: store,
             onQuit: { NSApp.terminate(nil) },
-            onRestart: { [weak self] in self?.restartIntoInstalledBuild() }
+            onRestart: { [weak self] in self?.restartIntoInstalledBuild() },
+            onSettings: { [weak self] in self?.preferences.show() }
         )
         self.widget = widget
 
@@ -120,6 +125,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         widget.start()
+    }
+
+    /// Reached from the Settings… menu item, which has no target and finds this down the responder
+    /// chain — the app delegate is on it, the panel's own views are not.
+    @objc func showPreferences(_ sender: Any?) {
+        preferences.show()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

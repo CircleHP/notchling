@@ -19,6 +19,7 @@ struct ExpandedView: View {
     let onFocus: (Session) -> Void
     let onQuit: () -> Void
     let onRestart: () -> Void
+    let onSettings: () -> Void
 
     /// Which rows the panel draws, captured when it opened.
     ///
@@ -45,12 +46,14 @@ struct ExpandedView: View {
         store: SessionStore,
         onFocus: @escaping (Session) -> Void,
         onQuit: @escaping () -> Void,
-        onRestart: @escaping () -> Void
+        onRestart: @escaping () -> Void,
+        onSettings: @escaping () -> Void
     ) {
         self.store = store
         self.onFocus = onFocus
         self.onQuit = onQuit
         self.onRestart = onRestart
+        self.onSettings = onSettings
         _layout = State(initialValue: PanelLayout(sessions: store.sessions))
         _pendingVersion = State(initialValue: store.pendingVersion)
     }
@@ -122,23 +125,21 @@ struct ExpandedView: View {
         }
     }
 
+    /// Count on the left where reading starts, actions on the right. The brand mark that used to hold
+    /// the left edge has moved to the settings window: it was the only thing in the header that was
+    /// neither a number nor a button, and the notch itself already carries the identity.
     private var header: some View {
         HStack(spacing: metrics.size(7)) {
-            BrandMarkView(height: metrics.snapped(12))
-
-            Spacer()
-
             Text(summary)
                 .font(metrics.font(10, weight: .medium, design: .rounded))
                 .foregroundStyle(Theme.dim)
 
-            Button(action: onQuit) {
-                Image(systemName: "power")
-                    .font(metrics.font(10, weight: .semibold))
-                    .foregroundStyle(Theme.dim)
+            Spacer()
+
+            HStack(spacing: metrics.size(4)) {
+                HeaderButton(symbol: "gearshape", help: "Notchling settings", action: onSettings)
+                HeaderButton(symbol: "power", help: "Quit Notchling", action: onQuit)
             }
-            .buttonStyle(.plain)
-            .help("Quit Notchling")
         }
         .padding(.horizontal, metrics.size(Self.contentInset))
     }
@@ -146,6 +147,37 @@ struct ExpandedView: View {
     private var summary: String {
         let count = layout.sessionCount
         return count == 1 ? "1 session" : "\(count) sessions"
+    }
+}
+
+/// One icon in the header.
+///
+/// The hit target is deliberately larger than the glyph and squarer than it: these sit next to each
+/// other, one of them ends the widget, and a 10pt icon is a 10pt target unless something says
+/// otherwise. The gap between two of them is set by the header, not here.
+private struct HeaderButton: View {
+    let symbol: String
+    let help: String
+    let action: () -> Void
+
+    @Environment(\.widgetMetrics) private var metrics
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(metrics.font(10, weight: .semibold))
+                .foregroundStyle(Theme.dim)
+                .frame(width: metrics.size(16), height: metrics.size(16))
+                .background {
+                    RoundedRectangle(cornerRadius: metrics.size(4))
+                        .fill(isHovering ? Theme.surface : Theme.surface.opacity(0))
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .help(help)
     }
 }
 
