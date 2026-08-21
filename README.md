@@ -64,7 +64,8 @@ misclick, because there is no floating window:
   `claude --resume` lists — rather than a slug that identifies nothing when three are open. A name you
   set yourself always wins, and `/color` puts a coloured bar down the row.
 - **Plan usage and per-session context**, optionally. Account-wide limits read the same whichever
-  session is on screen.
+  session is on screen, and a switch in settings hides the plan bars again without touching anything
+  in Claude Code.
 - **On every screen.** A notched display uses the real notch; every other screen gets a drawn one, same
   shape and behaviour.
 

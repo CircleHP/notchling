@@ -563,7 +563,10 @@ final class SessionStore {
 
     /// Called on a slow timer. Deliberately does no I/O beyond `kill(pid, 0)` and a few small reads.
     func tick() {
-        let freshUsage = UsageReader.read()
+        // Turned off means not read at all rather than read and hidden. Nobody is looking at the
+        // result, and the scan still reports a usage file it cannot decode — a finding in the log
+        // about a part of the widget the person has switched off.
+        let freshUsage = PanelPreference.showsPlanUsage ? UsageReader.read() : nil
         if freshUsage != usage { usage = freshUsage }
 
         refreshPendingVersion()
