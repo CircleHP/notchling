@@ -100,6 +100,7 @@ struct PreferencesView: View {
     let checkNow: () async -> String
 
     @State private var collection: Collection = .idle
+    @State private var showsPlanUsage = PanelPreference.showsPlanUsage
     /// An unanswered question reads as off here. The panel is where it gets asked; this is where it
     /// gets changed, and a switch cannot show three states.
     @State private var checksEnabled = UpdatePreference.current == .on
@@ -110,6 +111,8 @@ struct PreferencesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             identity
+            Divider()
+            panel
             if updatesSupported {
                 Divider()
                 updateChecks
@@ -131,6 +134,20 @@ struct PreferencesView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    /// Written straight to the preference, like the hour picker below and unlike the update switch:
+    /// nothing has to react to this. The panel reads the flag on its next sweep, two seconds away.
+    private var panel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Show plan usage", isOn: $showsPlanUsage)
+                .onChange(of: showsPlanUsage) { _, shown in PanelPreference.showsPlanUsage = shown }
+
+            Text("The 5-hour and 7-day bars along the bottom of the panel. Off, they are neither drawn nor read. Per-session context stays.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

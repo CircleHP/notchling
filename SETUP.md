@@ -148,6 +148,13 @@ on the compact strip, so open the notch to see them.
 Because a status line only runs while its session is on screen, these numbers go stale when nothing is
 running. The panel dims them and says so rather than presenting old numbers as current.
 
+**Hiding the bars again is a checkbox.** The settings window behind the gear has a **Show plan usage**
+switch. Off, the panel drops that block and the sweep stops reading `~/.notchling/usage/` for it; the
+three-day cleanup of that directory carries on either way, so nothing accumulates while you are not
+looking. It takes effect within a couple of seconds and needs no restart. The status line keeps running, so per-session
+context is unaffected — removing the status line itself is `notchling-hooks no-statusline`, and that one
+does need a session restart.
+
 ## Terminal compatibility
 
 Session **discovery** does not depend on your terminal at all — it comes from Claude Code. Every
@@ -362,7 +369,8 @@ format the running app predates. Restarting the widget is the fix; the directory
 says what each entry actually is, including Claude Code's own pooled background processes (which the
 widget hides).
 
-**Usage bars missing** — four checks, in order. The status line is opt-in, so run
+**Usage bars missing** — five checks, in order. Start with the **Show plan usage** switch in the
+settings window: off, there are no bars whatever else is true. Then the status line is opt-in, so run
 `notchling-hooks statusline` first, or answer yes when `notchling-hooks setup` asks. Then **restart your sessions**: `statusLine` is read at session
 start, and a session that was already running will never pick it up however long you wait. Confirm it
 landed with `jq '.statusLine.command' ~/.claude/settings.json`. Finally check that
