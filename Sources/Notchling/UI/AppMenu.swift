@@ -37,9 +37,12 @@ enum AppMenu {
             keyEquivalent: ","
         )
         menu.addItem(.separator())
+        // Not `NSApplication.terminate`. Under launchd's `KeepAlive` that ends the process and gets a
+        // new one a second later, which is the fake quit the power button used to be — leaving it here
+        // would just move the bug to the keyboard.
         menu.addItem(
             withTitle: "Quit Notchling",
-            action: #selector(NSApplication.terminate(_:)),
+            action: #selector(AppDelegate.stopWidget(_:)),
             keyEquivalent: "q"
         )
 

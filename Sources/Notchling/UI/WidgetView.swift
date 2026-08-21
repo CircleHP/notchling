@@ -28,7 +28,7 @@ struct WidgetView: View {
     let onHover: (Bool) -> Void
     let onContentGeometry: (WidgetPresentation, WidgetContentGeometry) -> Void
     let onFocus: (Session) -> Void
-    let onQuit: () -> Void
+    let onStop: () -> Void
     let onRestart: () -> Void
     let onSettings: () -> Void
 
@@ -213,7 +213,7 @@ struct WidgetView: View {
             ExpandedView(
                 store: store,
                 onFocus: onFocus,
-                onQuit: onQuit,
+                onStop: onStop,
                 onRestart: onRestart,
                 onSettings: onSettings
             )
