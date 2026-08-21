@@ -401,9 +401,14 @@ final class SessionStore {
             // already notified. It only matters when the session stopped mid-work to ask.
             return current == .working ? .needsYou : nil
 
-        case "agent_completed":
-            return .done
-
+        // `agent_completed` is not this session finishing. Claude Code raises it from the background-agent
+        // list, once per agent that leaves the running band, with the parent's `session_id` and no
+        // `agent_id` — so it arrives here rather than in `applyAgentEvent`, and answering `.done` made a
+        // spawned agent returning sound and drop the notch exactly as if the user's own turn had ended.
+        // A fan-out did it once per agent. Only the session's own `Stop` is a finish.
+        //
+        // It also covers the failing case: the payload says "finished" or "failed" in `message` alone, so
+        // `.done` played the success cue for an agent that had failed.
         default:
             // auth_success, elicitation_complete, … — nothing to show.
             return nil
