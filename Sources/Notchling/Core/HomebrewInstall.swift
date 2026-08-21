@@ -61,23 +61,30 @@ struct HomebrewInstall: Equatable {
             && FileManager.default.fileExists(atPath: formula.path)
     }
 
-    /// `NOTCHLING_FORCE_HOMEBREW=1` treats this copy as a Homebrew one, finding the prefix by looking
-    /// for the tap in the usual places.
+    /// `NOTCHLING_FORCE_HOMEBREW=/opt/homebrew` treats this copy as one installed from that prefix.
     ///
     /// Everything about updating is gated on the running bundle's path, and a build in `.build/` is
     /// not a path Homebrew made — so without this, none of that UI can be looked at from a development
     /// build at all. Same reason `NOTCHLING_FORCE_PILL` exists: the branch that cannot be reached on
     /// the machine you develop on is the branch that ships unlooked-at.
-    private static let forced = ProcessInfo.processInfo.environment["NOTCHLING_FORCE_HOMEBREW"] == "1"
-
-    private static let standardPrefixes = ["/opt/homebrew", "/usr/local"]
+    ///
+    /// The prefix comes from the variable rather than from a list of the usual ones in here, and that
+    /// is not a stylistic choice. Homebrew decides whether a bottle can be poured into any prefix by
+    /// looking for its own prefix *inside the installed files*, so a literal `/opt/homebrew` anywhere
+    /// in this binary makes every bottle non-relocatable — and the tap's release step refuses to
+    /// publish one, which is exactly how the first attempt at 1.2.0 was caught. `PrefixLiteralTests`
+    /// keeps it that way.
+    private static var forcedPrefix: URL? {
+        guard let raw = ProcessInfo.processInfo.environment["NOTCHLING_FORCE_HOMEBREW"], !raw.isEmpty
+        else { return nil }
+        return URL(fileURLWithPath: raw)
+    }
 
     /// The install backing this process, or nil when Homebrew is not what put it here.
     static func current(runningBundle: URL = Bundle.main.bundleURL) -> HomebrewInstall? {
         if let install = detect(runningBundle: runningBundle), install.isUsable { return install }
-        guard forced else { return nil }
-        return standardPrefixes
-            .map { HomebrewInstall(prefix: URL(fileURLWithPath: $0)) }
-            .first(where: \.isUsable)
+        guard let forcedPrefix else { return nil }
+        let forced = HomebrewInstall(prefix: forcedPrefix)
+        return forced.isUsable ? forced : nil
     }
 }

@@ -202,3 +202,39 @@ struct UpdatePreferenceTests {
         #expect(UpdatePreference.day(of: at(12)) == "2026-08-21")
     }
 }
+
+@Suite("Homebrew prefix literals")
+struct PrefixLiteralTests {
+    /// A source-level check, because it is the only kind that works.
+    ///
+    /// Homebrew decides whether a bottle can be poured into any prefix by searching the installed
+    /// files for its own prefix. One `"/opt/homebrew"` in this binary makes every bottle
+    /// non-relocatable, so the tap's release step refuses to publish it — the first attempt at 1.2.0
+    /// failed exactly there, after the app release had already been tagged.
+    ///
+    /// Nothing about that is visible in a build, a test run, or the app itself. It only shows up in a
+    /// release that is already half done.
+    @Test("no source names a Homebrew prefix")
+    func noPrefixLiterals() throws {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources")
+
+        let files = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }
+            .filter { $0.pathExtension == "swift" } ?? []
+        #expect(!files.isEmpty, "found no sources to check")
+
+        for file in files {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            for (number, line) in source.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                let text = String(line)
+                // Comments may name a prefix — explaining this rule requires it. Only code counts.
+                let code = text.range(of: "//").map { String(text[text.startIndex ..< $0.lowerBound]) } ?? text
+                for prefix in ["/opt/homebrew", "/usr/local"] where code.contains(prefix) {
+                    Issue.record("\(file.lastPathComponent):\(number + 1) names \(prefix) — take it from the environment or the running bundle's path instead")
+                }
+            }
+        }
+    }
+}
