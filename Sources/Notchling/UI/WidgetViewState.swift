@@ -25,10 +25,7 @@ struct WidgetRoot: View {
     let state: WidgetViewState
     let onHover: (Bool) -> Void
     let onContentGeometry: (WidgetPresentation, WidgetContentGeometry) -> Void
-    let onFocus: (Session) -> Void
-    let onStop: () -> Void
-    let onRestart: () -> Void
-    let onSettings: () -> Void
+    let actions: WidgetActions
 
     var body: some View {
         WidgetView(
@@ -38,10 +35,7 @@ struct WidgetRoot: View {
             isTransitioning: state.isTransitioning,
             onHover: onHover,
             onContentGeometry: onContentGeometry,
-            onFocus: onFocus,
-            onStop: onStop,
-            onRestart: onRestart,
-            onSettings: onSettings
+            actions: actions
         )
     }
 }

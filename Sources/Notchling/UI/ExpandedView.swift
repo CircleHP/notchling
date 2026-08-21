@@ -16,10 +16,7 @@ struct ExpandedView: View {
     nonisolated static let panelWidth: CGFloat = 380
 
     let store: SessionStore
-    let onFocus: (Session) -> Void
-    let onStop: () -> Void
-    let onRestart: () -> Void
-    let onSettings: () -> Void
+    let actions: WidgetActions
 
     /// Which rows the panel draws, captured when it opened.
     ///
@@ -44,16 +41,10 @@ struct ExpandedView: View {
 
     init(
         store: SessionStore,
-        onFocus: @escaping (Session) -> Void,
-        onStop: @escaping () -> Void,
-        onRestart: @escaping () -> Void,
-        onSettings: @escaping () -> Void
+        actions: WidgetActions
     ) {
         self.store = store
-        self.onFocus = onFocus
-        self.onStop = onStop
-        self.onRestart = onRestart
-        self.onSettings = onSettings
+        self.actions = actions
         _layout = State(initialValue: PanelLayout(sessions: store.sessions))
         _pendingVersion = State(initialValue: store.pendingVersion)
     }
@@ -63,7 +54,7 @@ struct ExpandedView: View {
             header
 
             if let version = pendingVersion {
-                UpgradeNoticeRow(version: version, onRestart: onRestart)
+                UpgradeNoticeRow(version: version, onRestart: actions.restart)
                     .padding(.horizontal, metrics.size(Self.contentInset))
             }
 
@@ -108,7 +99,7 @@ struct ExpandedView: View {
     private func view(for row: PanelRow, at index: Int) -> some View {
         switch row {
         case let .session(captured):
-            SessionRow(session: store.session(id: captured.sessionID) ?? captured, onFocus: onFocus)
+            SessionRow(session: store.session(id: captured.sessionID) ?? captured, onFocus: actions.focus)
 
         case let .agent(sessionID, captured):
             AgentRow(
@@ -116,7 +107,7 @@ struct ExpandedView: View {
                 isLast: layout.isLastInBlock(index),
                 onFocus: {
                     guard let session = store.session(id: sessionID) else { return }
-                    onFocus(session)
+                    actions.focus(session)
                 }
             )
 
@@ -137,13 +128,13 @@ struct ExpandedView: View {
             Spacer()
 
             HStack(spacing: metrics.size(4)) {
-                HeaderButton(symbol: "gearshape", help: "Notchling settings", action: onSettings)
+                HeaderButton(symbol: "gearshape", help: "Notchling settings", action: actions.settings)
                 HeaderButton(
                     symbol: "arrow.clockwise",
                     help: "Restart the widget, picking up any version installed since it started",
-                    action: onRestart
+                    action: actions.restart
                 )
-                HeaderButton(symbol: "power", help: "Stop the widget", action: onStop)
+                HeaderButton(symbol: "power", help: "Stop the widget", action: actions.stop)
             }
         }
         .padding(.horizontal, metrics.size(Self.contentInset))
