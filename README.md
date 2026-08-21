@@ -39,8 +39,9 @@ misclick, because there is no floating window:
 
 - `LSUIElement`, so it has no Dock icon and never appears in Cmd-Tab.
 - `ignoresCycle`, so it is not in the window cycle either.
-- It can never take keyboard focus — the panel is explicitly barred from becoming the key window, so it
-  cannot steal your menu bar or your typing.
+- The panel can never take keyboard focus — it is explicitly barred from becoming the key window, so it
+  cannot steal your typing. The settings window and the confirmation before stopping the widget do take
+  focus, because they are windows you asked for; nothing else the app draws ever does.
 - Its window is **exactly the size of what it draws** — 256×32pt when compact, entirely inside the menu
   bar. A window swallows mouse clicks across its whole rectangle whatever it painted there, so any slack
   would be a dead zone over the browser tabs underneath. There is no slack.
@@ -135,10 +136,14 @@ brew services restart notchling
 ```
 
 The restart is not optional: Homebrew replaces the files but leaves the running app alone, so the
-widget keeps running the version it started with until something restarts it. From 1.1.0 the panel says
-so too — it notices a version on disk that is not the one it is running, and offers to restart into it —
+widget keeps running the version it started with until something restarts it. The panel has a button
+for exactly this — its header carries three, on the right: settings, restart, stop. It also notices on
+its own, a version on disk that is not the one it is running getting a row offering to restart into it,
 but it looks every six hours rather than continuously, so an upgrade can land long before it is
 mentioned. Restart rather than wait to be told.
+
+Stop is the one that ends the widget, and it asks first: under `brew services` it will not come back
+until `brew services start notchling`, or until you next log in.
 
 Nothing needs rewiring. The hooks record `$(brew --prefix)/bin/notchling-hook` and the status line the
 `opt` path, both of which Homebrew repoints at the new version. On the plugin route, `/plugin update

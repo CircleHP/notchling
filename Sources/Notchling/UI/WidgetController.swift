@@ -12,7 +12,7 @@ import SwiftUI
 @MainActor
 final class WidgetController {
     private let store: SessionStore
-    private let onQuit: () -> Void
+    private let onStop: () -> Void
     private let onRestart: () -> Void
     private let onSettings: () -> Void
     private let displayMode: DisplayMode
@@ -30,13 +30,13 @@ final class WidgetController {
     init(
         store: SessionStore,
         displayMode: DisplayMode = .current,
-        onQuit: @escaping () -> Void,
+        onStop: @escaping () -> Void,
         onRestart: @escaping () -> Void,
         onSettings: @escaping () -> Void
     ) {
         self.store = store
         self.displayMode = displayMode
-        self.onQuit = onQuit
+        self.onStop = onStop
         self.onRestart = onRestart
         self.onSettings = onSettings
     }
@@ -169,7 +169,7 @@ final class WidgetController {
                     store: store,
                     onHoverChange: { [weak self] in self?.hoverChanged() },
                     onFocus: { TerminalFocus.focus($0) },
-                    onQuit: onQuit,
+                    onStop: onStop,
                     onRestart: onRestart,
                     onSettings: onSettings
                 )

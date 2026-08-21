@@ -19,7 +19,7 @@ final class WidgetPresenter {
     private let store: SessionStore
     private let onHoverChange: () -> Void
     private let onFocus: (Session) -> Void
-    private let onQuit: () -> Void
+    private let onStop: () -> Void
     private let onRestart: () -> Void
     private let onSettings: () -> Void
 
@@ -36,7 +36,7 @@ final class WidgetPresenter {
         store: SessionStore,
         onHoverChange: @escaping () -> Void,
         onFocus: @escaping (Session) -> Void,
-        onQuit: @escaping () -> Void,
+        onStop: @escaping () -> Void,
         onRestart: @escaping () -> Void,
         onSettings: @escaping () -> Void
     ) {
@@ -44,7 +44,7 @@ final class WidgetPresenter {
         self.store = store
         self.onHoverChange = onHoverChange
         self.onFocus = onFocus
-        self.onQuit = onQuit
+        self.onStop = onStop
         self.onRestart = onRestart
         self.onSettings = onSettings
         self.state = WidgetViewState(metrics: WidgetMetrics(screen: screen))
@@ -149,7 +149,7 @@ final class WidgetPresenter {
                 self?.contentGeometryChanged(presentation, geometry)
             },
             onFocus: onFocus,
-            onQuit: onQuit,
+            onStop: onStop,
             onRestart: onRestart,
             onSettings: onSettings
         )

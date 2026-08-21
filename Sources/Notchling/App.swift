@@ -57,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let widget = WidgetController(
             store: store,
-            onQuit: { NSApp.terminate(nil) },
+            onStop: { [weak self] in self?.stopWidget(nil) },
             onRestart: { [weak self] in self?.restartIntoInstalledBuild() },
             onSettings: { [weak self] in self?.preferences.show() }
         )
@@ -138,6 +138,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         spool?.stop()
         registry?.stop()
         widget?.stop()
+    }
+
+    /// Stops the widget for real.
+    ///
+    /// `NSApp.terminate` alone is a restart: both install methods register a launchd job with
+    /// `KeepAlive` set, and launchd starts another copy within the second. So the job has to be booted
+    /// out, and only the job that owns *this* process — a leftover job for the other install method is
+    /// not ours to unload.
+    ///
+    /// `@objc` and reachable down the responder chain, because Command-Q has to mean this too.
+    /// Wired to `NSApplication.terminate` it would be the same fake quit the power button used to be.
+    @objc func stopWidget(_ sender: Any?) {
+        Task { await self.confirmAndStop() }
+    }
+
+    /// Confirmed first, in an alert rather than on the row: there is no way back to a widget that is
+    /// not running except a command, that command differs by how it was installed, and the panel has
+    /// one line and cannot say it.
+    private func confirmAndStop() async {
+        // Off the main actor. Probing launchd is two subprocesses, and a launchd that is slow to
+        // answer must not freeze a widget whose whole job is to be glanced at.
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let job = await Task.detached { LaunchAgent.owner(ofPID: pid) }.value
+
+        let alert = NSAlert()
+        alert.messageText = "Stop Notchling?"
+        alert.informativeText = if let job {
+            "It will stop until you run \(job.restartCommand), and starts again when you next log in."
+        } else {
+            "The widget will stop until you open it again."
+        }
+        alert.addButton(withTitle: "Stop")
+        alert.addButton(withTitle: "Cancel")
+
+        // The panel sits at `.screenSaver` so it can be seen from a full-screen window, which puts it
+        // above an alert's own level. During a modal session it also stops receiving the mouse-moved
+        // events that would collapse it, so a panel tall enough to reach the alert would cover it and
+        // swallow the clicks. One above the panel rather than collapsing it: this is the app's own
+        // question about itself, and it should outrank the app's own chrome.
+        alert.window.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+
+        // An accessory app's alert opens behind whatever is frontmost otherwise, and the click that
+        // asked for it looks like it did nothing. Only undone if it was not already frontmost —
+        // deactivating an app that was active sends the settings window behind everything.
+        let wasActive = NSApp.isActive
+        NSApp.activate()
+
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            if !wasActive { NSApp.deactivate() }
+            return
+        }
+
+        guard let job else {
+            NSApp.terminate(nil)
+            return
+        }
+
+        // Does not return in the ordinary case: launchd tears the job down, and this process is in it.
+        guard !LaunchAgent.bootout(job) else { return }
+
+        Log.diagnostics.error("could not boot out \(job.label, privacy: .public), staying up")
+        let failure = NSAlert()
+        failure.messageText = "Notchling could not be stopped"
+        failure.informativeText = "launchd would not let go of it. Run \(job.stopCommand) instead."
+        failure.window.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+        failure.runModal()
+        if !wasActive { NSApp.deactivate() }
     }
 
     /// Relaunches from whichever copy is on disk now, which after an upgrade is not the one this

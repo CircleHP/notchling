@@ -17,7 +17,7 @@ struct ExpandedView: View {
 
     let store: SessionStore
     let onFocus: (Session) -> Void
-    let onQuit: () -> Void
+    let onStop: () -> Void
     let onRestart: () -> Void
     let onSettings: () -> Void
 
@@ -45,13 +45,13 @@ struct ExpandedView: View {
     init(
         store: SessionStore,
         onFocus: @escaping (Session) -> Void,
-        onQuit: @escaping () -> Void,
+        onStop: @escaping () -> Void,
         onRestart: @escaping () -> Void,
         onSettings: @escaping () -> Void
     ) {
         self.store = store
         self.onFocus = onFocus
-        self.onQuit = onQuit
+        self.onStop = onStop
         self.onRestart = onRestart
         self.onSettings = onSettings
         _layout = State(initialValue: PanelLayout(sessions: store.sessions))
@@ -138,7 +138,12 @@ struct ExpandedView: View {
 
             HStack(spacing: metrics.size(4)) {
                 HeaderButton(symbol: "gearshape", help: "Notchling settings", action: onSettings)
-                HeaderButton(symbol: "power", help: "Quit Notchling", action: onQuit)
+                HeaderButton(
+                    symbol: "arrow.clockwise",
+                    help: "Restart the widget, picking up any version installed since it started",
+                    action: onRestart
+                )
+                HeaderButton(symbol: "power", help: "Stop the widget", action: onStop)
             }
         }
         .padding(.horizontal, metrics.size(Self.contentInset))
