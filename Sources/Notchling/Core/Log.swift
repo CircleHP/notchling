@@ -37,4 +37,8 @@ enum Log {
 
     /// The settings window's own failures — including the one that collects everything above.
     static let diagnostics = Logger(subsystem: subsystem, category: "diagnostics")
+
+    /// Looking for a new release, and installing one. The only part of this app that talks to the
+    /// network, and only once somebody has said it may.
+    static let updates = Logger(subsystem: subsystem, category: "updates")
 }

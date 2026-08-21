@@ -35,7 +35,10 @@ struct ExpandedView: View {
     /// Captured when the panel opens, for the same reason the row list is: `WidgetPresenter` refuses
     /// to resize the window while the panel is open, so a row appearing mid-hover would be drawn
     /// outside the space the window has. It appears on the next open instead.
-    @State private var pendingVersion: String?
+    ///
+    /// Which is also why answering the question below does not remove its row — that would be a height
+    /// change mid-hover. The row acknowledges in place and is gone on the next open.
+    @State private var notice: PanelNotice?
 
     @Environment(\.widgetMetrics) private var metrics
 
@@ -46,15 +49,15 @@ struct ExpandedView: View {
         self.store = store
         self.actions = actions
         _layout = State(initialValue: PanelLayout(sessions: store.sessions))
-        _pendingVersion = State(initialValue: store.pendingVersion)
+        _notice = State(initialValue: Self.notice(for: store))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: metrics.size(8)) {
             header
 
-            if let version = pendingVersion {
-                UpgradeNoticeRow(version: version, onRestart: actions.restart)
+            if let notice {
+                noticeRow(notice)
                     .padding(.horizontal, metrics.size(Self.contentInset))
             }
 
@@ -90,6 +93,39 @@ struct ExpandedView: View {
         }
         .padding(.horizontal, metrics.size(4))
         .frame(width: metrics.size(Self.panelWidth), alignment: .leading)
+    }
+
+    /// At most one of these, because they are competing claims on the same strip and stacking them
+    /// would change the panel's height. Ordered by how much the person needs it: a build already on
+    /// disk is one restart from being used, an available one is a download away, and the question is
+    /// only worth asking when there is nothing else to say.
+    static func notice(for store: SessionStore) -> PanelNotice? {
+        if let version = store.pendingVersion { return .restart(version) }
+        if let version = store.updates.available { return .available(version) }
+        if store.updates.isSupported, UpdatePreference.current == .unset { return .consent }
+        return nil
+    }
+
+    @ViewBuilder
+    private func noticeRow(_ notice: PanelNotice) -> some View {
+        switch notice {
+        case let .restart(version):
+            UpgradeNoticeRow(version: version, onRestart: actions.restart)
+        case let .available(version):
+            UpdateAvailableRow(version: version, store: store, onInstall: actions.installUpdate)
+        case .consent:
+            UpdateConsentRow { enabled in
+                actions.setUpdateChecks(enabled)
+                // Gone the moment it is answered. An answered question is not information, and the
+                // next thing worth this strip is a version actually being available.
+                //
+                // Safe despite the panel being frozen: the window is already at its expanded size, so
+                // losing a row leaves transparent space inside a footprint that exists either way. The
+                // presenter only ever grows an open panel, never shrinks it, and the pointer is on this
+                // row — at the top — so it stays well inside whatever is left.
+                self.notice = nil
+            }
+        }
     }
 
     /// Each row re-reads its own current state, falling back to what was captured when the panel opened.
@@ -144,6 +180,16 @@ struct ExpandedView: View {
         let count = layout.sessionCount
         return count == 1 ? "1 session" : "\(count) sessions"
     }
+}
+
+/// The one thing the strip above the rows is saying, if it is saying anything.
+enum PanelNotice: Equatable {
+    /// A build on disk that this process is not running.
+    case restart(String)
+    /// A newer release the tap is offering.
+    case available(String)
+    /// Nobody has said whether the widget may look for releases.
+    case consent
 }
 
 /// One icon in the header.
@@ -215,5 +261,107 @@ private struct UpgradeNoticeRow: View {
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .help("This widget is still running the previous build. Restart to pick up \(version).")
+    }
+}
+
+/// A release that exists and is not installed. The version is named, because "an update is available"
+/// is not something anybody can decide about.
+private struct UpdateAvailableRow: View {
+    let version: String
+    let store: SessionStore
+    let onInstall: () -> Void
+
+    @Environment(\.widgetMetrics) private var metrics
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: onInstall) {
+            HStack(spacing: metrics.size(6)) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(metrics.font(11))
+                    .foregroundStyle(Theme.green)
+
+                Text(label)
+                    .font(metrics.font(11, weight: .medium))
+                    .foregroundStyle(Theme.ink)
+                    .lineLimit(1)
+
+                Spacer(minLength: metrics.size(4))
+
+                // Stays the same height whichever it is: the panel cannot resize while it is open.
+                if store.updates.install == .running {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(metrics.size(0.6))
+                        .frame(width: metrics.size(12), height: metrics.size(12))
+                } else {
+                    Text("Install")
+                        .font(metrics.font(10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Theme.green)
+                }
+            }
+            .padding(.vertical, metrics.size(5))
+            .padding(.horizontal, metrics.size(7))
+            .background {
+                RoundedRectangle(cornerRadius: metrics.size(7))
+                    .fill(isHovering ? Theme.surface : Theme.surface.opacity(0.6))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(store.updates.install == .running)
+        .onHover { isHovering = $0 }
+        .help("Runs brew upgrade notchling and restarts into \(version).")
+    }
+
+    private var label: String {
+        if case let .failed(reason) = store.updates.install { return reason }
+        return store.updates.install == .running ? "Installing \(version)…" : "Version \(version) available"
+    }
+}
+
+/// The question, asked once. Until it is answered the app makes no network connection of any kind,
+/// which is what the claim in README and NOTICE rests on — so this is consent rather than a default,
+/// and it is keyed on never having been asked rather than on being a new install.
+private struct UpdateConsentRow: View {
+    let onAnswer: (Bool) -> Void
+
+    @Environment(\.widgetMetrics) private var metrics
+
+    var body: some View {
+        HStack(spacing: metrics.size(6)) {
+            Image(systemName: "arrow.down.circle")
+                .font(metrics.font(11))
+                .foregroundStyle(Theme.dim)
+
+            Text("Check for new versions daily?")
+                .font(metrics.font(11, weight: .medium))
+                .foregroundStyle(Theme.ink)
+                .lineLimit(1)
+
+            Spacer(minLength: metrics.size(4))
+
+            answer("Yes", enabled: true)
+            answer("No", enabled: false)
+        }
+        .padding(.vertical, metrics.size(5))
+        .padding(.horizontal, metrics.size(7))
+        .background {
+            RoundedRectangle(cornerRadius: metrics.size(7))
+                .fill(Theme.surface.opacity(0.6))
+        }
+        .help("Fetches this app's Homebrew tap once a day, at \(UpdatePreference.label(forHour: UpdatePreference.hour)), to see whether a newer release exists. Nothing else is sent, and nothing is installed without asking. Change or undo this in settings.")
+    }
+
+    private func answer(_ title: String, enabled: Bool) -> some View {
+        Button { onAnswer(enabled) } label: {
+            Text(title)
+                .font(metrics.font(10, weight: .semibold, design: .rounded))
+                .foregroundStyle(enabled ? Theme.clay : Theme.dim)
+                .frame(minWidth: metrics.size(22))
+                .padding(.vertical, metrics.size(2))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

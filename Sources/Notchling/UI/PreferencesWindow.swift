@@ -18,10 +18,23 @@ import SwiftUI
 final class PreferencesWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
 
+    /// Set once at launch, before anything can open the window. The coordinator owns what happens on a
+    /// change — turning checks off also drops any release it had already found.
+    var onUpdateChecksChanged: ((Bool) -> Void)?
+    /// False on an install Homebrew did not make, where there is nothing a yes could do.
+    var updatesSupported = false
+    /// Runs a check now and returns the line to show. Set at launch, like the two above.
+    var checkForUpdatesNow: (() async -> String)?
+
     func show() {
         let window = window ?? makeWindow()
         self.window = window
 
+        // Rebuilt on every open. The window is reused, so a `@State` initialised from
+        // `UpdatePreference` would be read once and then be wrong: answer the panel's consent row
+        // after having opened this window and the switch still says off, with the hour disabled —
+        // and flipping it to correct itself would turn checking off.
+        install(content: window)
         window.center()
         // An accessory app has to ask. Without this the window orders front behind whatever is
         // frontmost, and the click that opened it appears to have done nothing.
@@ -42,13 +55,21 @@ final class PreferencesWindowController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.delegate = self
 
-        let content = NSHostingView(rootView: PreferencesView())
-        window.contentView = content
-        // The window takes its size from what the content asks for, and the content asks for a width
-        // and nothing else — so it has to *not* fill. A `maxHeight: .infinity` in there gives the
-        // hosting view an unbounded fitting size, and the window opens fifteen hundred points tall.
-        window.setContentSize(content.fittingSize)
+        install(content: window)
         return window
+    }
+
+    /// The window takes its size from what the content asks for, and the content asks for a width and
+    /// nothing else — so it has to *not* fill. A `maxHeight: .infinity` in there gives the hosting
+    /// view an unbounded fitting size, and the window opens fifteen hundred points tall.
+    private func install(content window: NSWindow) {
+        let view = NSHostingView(rootView: PreferencesView(
+            updatesSupported: updatesSupported,
+            setUpdateChecks: { [weak self] in self?.onUpdateChecksChanged?($0) },
+            checkNow: { [weak self] in await self?.checkForUpdatesNow?() ?? "Unavailable" }
+        ))
+        window.contentView = view
+        window.setContentSize(view.fittingSize)
     }
 
     /// Hand focus back to whatever the person was doing. Closing the only window of an app that stays
@@ -74,11 +95,25 @@ struct PreferencesView: View {
     /// see `makeWindow()`, which asks the hosting view rather than deciding for it.
     static let width: CGFloat = 400
 
+    let updatesSupported: Bool
+    let setUpdateChecks: (Bool) -> Void
+    let checkNow: () async -> String
+
     @State private var collection: Collection = .idle
+    /// An unanswered question reads as off here. The panel is where it gets asked; this is where it
+    /// gets changed, and a switch cannot show three states.
+    @State private var checksEnabled = UpdatePreference.current == .on
+    @State private var checkHour = UpdatePreference.hour
+    @State private var manualCheck: String?
+    @State private var isCheckingNow = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             identity
+            if updatesSupported {
+                Divider()
+                updateChecks
+            }
             Divider()
             diagnostics
         }
@@ -96,6 +131,53 @@ struct PreferencesView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var updateChecks: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Check for new versions daily", isOn: $checksEnabled)
+                .onChange(of: checksEnabled) { _, enabled in setUpdateChecks(enabled) }
+
+            Picker("At", selection: $checkHour) {
+                ForEach(0 ..< 24, id: \.self) { hour in
+                    Text(UpdatePreference.label(forHour: hour)).tag(hour)
+                }
+            }
+            .pickerStyle(.menu)
+            .fixedSize()
+            .disabled(!checksEnabled)
+            .onChange(of: checkHour) { _, hour in UpdatePreference.hour = hour }
+
+            Text("Fetches this app's Homebrew tap to see whether a newer release exists. Nothing is sent, and nothing is installed until you ask for it.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                // Works whatever the switch says: asking is its own consent, for this one request.
+                Button("Check Now") { check() }
+                    .disabled(isCheckingNow)
+
+                if isCheckingNow {
+                    ProgressView().controlSize(.small)
+                } else if let manualCheck {
+                    Text(manualCheck)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private func check() {
+        isCheckingNow = true
+        manualCheck = nil
+        Task {
+            let result = await checkNow()
+            manualCheck = result
+            isCheckingNow = false
         }
     }
 
