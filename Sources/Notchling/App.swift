@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = SessionStore()
     private let cues = SoundCues()
     private let preferences = PreferencesWindowController()
+    private var updates: UpdateCoordinator?
     private var spool: HookSpoolWatcher?
     private var registry: SessionRegistryReader?
     private var widget: WidgetController?
@@ -55,13 +56,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppMenu.install()
         pruneStaleFiles()
 
+        let updates = UpdateCoordinator(store: store)
+        self.updates = updates
+        preferences.updatesSupported = updates.isSupported
+        preferences.onUpdateChecksChanged = { [weak self] in self?.updates?.setChecksEnabled($0) }
+        preferences.checkForUpdatesNow = { [weak self] in
+            await self?.updates?.checkNow() ?? "Unavailable"
+        }
+
         let widget = WidgetController(
             store: store,
             actions: WidgetActions(
                 focus: { TerminalFocus.focus($0) },
                 restart: { [weak self] in self?.restartIntoInstalledBuild() },
                 stop: { [weak self] in self?.stopWidget(nil) },
-                settings: { [weak self] in self?.preferences.show() }
+                settings: { [weak self] in self?.preferences.show() },
+                installUpdate: { [weak self] in
+                    self?.updates?.installAvailable {
+                        // The upgrade has replaced the files; this process is still the old one.
+                        self?.restartIntoInstalledBuild()
+                    }
+                },
+                setUpdateChecks: { [weak self] enabled in self?.updates?.setChecksEnabled(enabled) }
             )
         )
         self.widget = widget
@@ -120,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 self.store.tick()
                 self.registry?.scan()
+                self.updates?.tick()
 
                 if Date.now.timeIntervalSince(self.lastPrune) > Self.pruneInterval {
                     self.pruneStaleFiles()

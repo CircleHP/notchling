@@ -68,10 +68,21 @@ misclick, because there is no floating window:
 - **On every screen.** A notched display uses the real notch; every other screen gets a drawn one, same
   shape and behaviour.
 
-It sends nothing anywhere: no network calls, no telemetry, nothing written outside its own directories
-and `~/.claude/settings.json`. It does read one thing from a session's transcript — the title Claude
-derives and a colour set with `/color`, both recorded nowhere else — by scanning backwards from the end
-for those two entries. That happens on your machine and stays there. At rest it costs 0.0–0.1% CPU.
+It sends nothing anywhere unless you turn on update checks: no telemetry, ever, and nothing written
+outside its own directories and `~/.claude/settings.json`. It does read one thing from a session's
+transcript — the title Claude derives and a colour set with `/color`, both recorded nowhere else — by
+scanning backwards from the end for those two entries. That happens on your machine and stays there.
+At rest it costs 0.0–0.1% CPU.
+
+The one exception is opt-in and asked for in plain words. The panel offers, once, to check daily for a
+new release; until you answer, and if you answer no, the app makes no network connection on its own.
+Say yes and it fetches **this project's Homebrew tap** — a `git fetch` of a public repository, once a
+day at an hour you choose — to compare the version there against the one installed. Nothing about you
+is sent, nothing else is contacted, and nothing is installed until you click to install it.
+
+The settings window behind the gear holds the switch, the hour, and a **Check Now** button. That
+button is the only other thing that reaches the network, and only for the one request you asked for
+by pressing it — it works whether daily checks are on or off, because clicking it is the consent.
 
 ## Install
 

@@ -56,6 +56,13 @@ final class SessionStore {
     /// A build sitting on disk that this process is not the one running. See `InstalledBuild`.
     var pendingVersion: String?
 
+    /// Everything the panel shows about updating, written by `UpdateCoordinator`.
+    ///
+    /// Here rather than on the coordinator for the same reason `usage` is here: this class is what the
+    /// panel reads, and it is already carried through every layer of the view tree. One value rather
+    /// than three properties, so adding to it does not widen anything.
+    var updates = UpdateStatus()
+
     /// Fired for every state transition, once per edge.
     var onTransition: ((Session, SessionState, SessionState) -> Void)?
 

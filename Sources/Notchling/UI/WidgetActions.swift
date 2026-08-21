@@ -28,4 +28,10 @@ struct WidgetActions {
 
     /// Open the settings window.
     let settings: () -> Void
+
+    /// Install the release the tap is offering, then restart into it.
+    let installUpdate: () -> Void
+
+    /// Answer the question about daily update checks, either way.
+    let setUpdateChecks: (Bool) -> Void
 }
