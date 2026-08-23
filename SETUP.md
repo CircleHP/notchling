@@ -230,6 +230,11 @@ What to expect:
 | `NOTCHLING_STALL_SECS=n` | change the stalled-turn threshold from 600s |
 | `NOTCHLING_FORCE_PILL=1` | treat every screen as notchless, to see the drawn notch on a notched Mac |
 | `NOTCHLING_ANIM=n` | slow the grow/shrink animations down n times, for inspecting them |
+| `NOTCHLING_FORCE_HOMEBREW=<prefix>` | treat this copy as installed from that prefix, to reach the update UI from a build Homebrew did not place |
+
+These reach the app only when you launch it yourself — `make run`, or the binary straight out of
+`swift build`. Neither `brew services` nor the login agent passes your shell environment to the job, so
+on an installed copy started either of those ways every one of them is inert.
 
 ## Building and signing
 
@@ -304,6 +309,8 @@ reliably clears it.
 | `~/.notchling/usage/` | plan limits, one file per session. Pruned after 3 days. |
 | `~/.notchling/usage.json` | plan limits, last writer wins. Kept for a widget from before `usage/` existed. |
 | `~/.notchling/sessions/` | per-session context and model. Pruned after 3 days. |
+| `~/.notchling/logs/` | only when you press **Collect Logs…**. The five most recent are kept. |
+| `~/.notchling/upgrade.log` | only when you install an update from the panel. What `git` and `brew` said. |
 | `$(brew --prefix)/opt/notchling/Notchling.app` | the app, installed by Homebrew. Version-independent path. |
 | `$(brew --prefix)/bin/notchling-hook`, `-hooks`, `-sessions` | the helpers, on `PATH`. Repointed by every upgrade. |
 | `~/Library/LaunchAgents/homebrew.mxcl.notchling.plist` | only with `brew services start notchling`. |
@@ -349,17 +356,26 @@ independent, so if the panel opens and you hear nothing, it's the audio side.
 changes each reinstall and the permission grant stops matching. See
 [How much signing you need](#how-much-signing-you-need).
 
-**Anything at all, when nothing above fits** — the app says what it could not do, and where:
+**Anything at all, when nothing above fits** — the app says what it could not do, and where. The
+settings window behind the gear has a **Collect Logs…** button: it writes the last six hours to
+`~/.notchling/logs/` and reveals the file in Finder, keeping the five most recent. That is the button
+to press before opening an issue.
+
+By hand it is:
 
 ```sh
-log show --predicate 'subsystem == "local.notchling"' --last 1h
+log show --predicate 'subsystem == "local.notchling"' --info --last 1h
 ```
 
-`log` is a zsh builtin, so use `/usr/bin/log` if your shell swallows it. A working widget logs nothing,
-so anything at all here is the answer: an AppleScript error behind a click that did nothing, a registry
-file that no longer decodes, a spool it could not write to. Paths and prompts are redacted by the
-system; what appears is the contract that broke, which is what makes the output safe to paste into an
-issue.
+**`--info` is not optional.** Everything the app logs below an outright error is at info level, which
+the system store only returns when asked — without the flag the command comes back empty however much
+went wrong, which reads as "nothing was wrong". `log` is also a zsh builtin, so use `/usr/bin/log` if
+your shell swallows it.
+
+A working widget logs nothing, so anything at all here is the answer: an AppleScript error behind a
+click that did nothing, a registry file that no longer decodes, a spool it could not write to. Paths and
+prompts are redacted by the system; what appears is the contract that broke, which is what makes the
+output safe to paste into an issue.
 
 **The widget is running but sees nothing** — check `~/.notchling/events/failed/`. Events the app cannot
 read are moved there rather than deleted, which is what an upgrade looks like when a newer hook writes a
