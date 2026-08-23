@@ -70,10 +70,13 @@ contracts they cover are the ones that break in the wild. Those skip themselves 
 ## Reporting a problem
 
 Issues use forms that apply the right labels. If the widget has gone quiet, the two things worth
-attaching are `notchling-sessions` output and the log:
+attaching are `notchling-sessions` output and the log. **Collect Logs…** in the settings window writes
+the last six hours to `~/.notchling/logs/` and reveals it in Finder; by hand it is:
 
 ```sh
-log show --predicate 'subsystem == "local.notchling"' --last 1h
+log show --predicate 'subsystem == "local.notchling"' --info --last 1h
 ```
 
-Note `log` is a zsh builtin — use `/usr/bin/log` if your shell swallows it.
+`--info` is what makes that useful. Everything below an outright error is logged at info level, which
+the store only returns when asked, so without the flag the output is empty however much went wrong.
+Note `log` is also a zsh builtin — use `/usr/bin/log` if your shell swallows it.

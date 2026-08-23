@@ -18,9 +18,9 @@ are no maintenance branches to backport to.
 
 ## What the attack surface actually is
 
-Notchling makes no network calls, sends no telemetry and reads no transcripts off the machine — see
-[NOTICE.md](../NOTICE.md). That removes a category of risk but not all of it, and a security policy
-that only said "we send nothing" would be misleading. What is worth scrutiny:
+Notchling sends no telemetry, and the only network request it makes is one it has to be told it may
+make — see [NOTICE.md](../NOTICE.md). That removes a category of risk but not all of it, and a security
+policy that only said "we send nothing" would be misleading. What is worth scrutiny:
 
 **`notchling-hook` runs on every tool call.** Claude Code executes it as a hook, with your environment,
 and acts on what it writes to stdout. Its contract is therefore that it never writes to stdout and
@@ -38,6 +38,20 @@ hang the app belongs here.
 **Recorded paths must survive an upgrade.** Anything written into `~/.claude/settings.json` uses the
 Homebrew `opt` prefix rather than a versioned Cellar path. A change that records a path which later
 points somewhere else is a finding, because the recorded command is executed on every session.
+
+**The update path runs Homebrew.** Checking for a release runs `git fetch` in the tap's clone; the
+install button runs `brew upgrade notchling`. Both are subprocesses launched with the absolute paths
+of the Homebrew install that placed this bundle, with `HOMEBREW_NO_AUTO_UPDATE=1` so one click means
+one formula. Neither runs at all until the question in the panel has been answered yes, and the check
+parses the formula's own text rather than asking `brew` for a version. Anything that makes this reach a
+tap, a repository or a formula other than this project's is a finding, as is anything that makes it run
+with an environment or a `brew` path it did not resolve itself.
+
+**A session's transcript is read, locally.** `TranscriptReader` scans backwards from the end of the
+session's own `.jsonl` under `~/.claude/projects/` for two entries recorded nowhere else: the title
+Claude derives, and a colour set with `/color`. Nothing else is taken from the file and nothing leaves
+the machine. A path that makes it read a file outside that directory, or forward any of it anywhere, is
+a finding.
 
 **What is out of scope:** the widget displaying content from a session you are already running —
 prompts, titles, tool names and error text are the user's own data, shown on the user's own screen.
