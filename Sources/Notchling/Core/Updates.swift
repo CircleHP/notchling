@@ -120,7 +120,7 @@ enum Updates {
             throw Failure.tapNotFastForward
         }
 
-        let result: Result
+        let result: Command.Result
         do {
             result = try run(
                 install.brew,
@@ -176,67 +176,21 @@ enum Updates {
         return result.output
     }
 
-    private struct Result {
-        let status: Int32
-        let output: String
-    }
-
-    /// Waits for the *reader* as well as the process, which is the whole trick.
-    ///
-    /// `terminationHandler` and `readDataToEndOfFile` both unblock on the same event — the child
-    /// exiting and closing the pipe's write end — so waiting only on termination and then taking the
-    /// output orders nothing, and the output can legitimately come back empty. A lock makes that
-    /// memory-safe without making it correct. The read has its own semaphore for that reason.
+    /// Everything that runs a command goes through `Command`, which waits for the reader as well as
+    /// the process — see the note there. The timeout is translated because `UpdateCoordinator` maps
+    /// `Updates.Failure` onto what the panel says, and a `Command.Failure` reaching it would be
+    /// reported as a generic failure instead of a timeout.
     private nonisolated static func run(
         _ executable: URL,
         _ arguments: [String],
         environment: [String: String],
         timeout: TimeInterval
-    ) throws -> Result {
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = arguments
-        if !environment.isEmpty {
-            process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+    ) throws -> Command.Result {
+        do {
+            return try Command.run(executable, arguments, environment: environment, timeout: timeout)
+        } catch let Command.Failure.timedOut(name) {
+            throw Failure.timedOut(name)
         }
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
-
-        try process.run()
-
-        // Drained on another thread so a command that outruns the pipe buffer cannot deadlock against
-        // a wait that will never come.
-        let collector = OutputCollector()
-        let handle = pipe.fileHandleForReading
-        let drained = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
-            collector.drain(handle)
-            drained.signal()
-        }
-
-        guard exited.wait(timeout: .now() + timeout) == .success else {
-            reap(process, exited: exited)
-            throw Failure.timedOut(executable.lastPathComponent)
-        }
-
-        // EOF follows the exit, so this is already signalled or about to be. Bounded anyway: a reader
-        // that never finishes must not become a caller that never returns.
-        _ = drained.wait(timeout: .now() + 5)
-        return Result(status: process.terminationStatus, output: collector.take())
-    }
-
-    /// SIGTERM, then SIGKILL if it is ignored, then reap. Without this a timed-out `brew` keeps
-    /// running — holding Homebrew's lock — while the panel offers the button again.
-    private nonisolated static func reap(_ process: Process, exited: DispatchSemaphore) {
-        process.terminate()
-        guard exited.wait(timeout: .now() + 5) != .success else { return }
-        kill(process.processIdentifier, SIGKILL)
-        _ = exited.wait(timeout: .now() + 5)
     }
 
     private nonisolated static func append(_ text: String, to url: URL) {
@@ -248,27 +202,5 @@ enum Updates {
         } else {
             try? data.write(to: url)
         }
-    }
-}
-
-/// Somewhere for a background thread to put a subprocess's output where the thread that started it can
-/// read it afterwards. The lock keeps the two accesses safe; what *orders* them is the caller waiting
-/// on the drain's own semaphore — see `run(_:_:environment:timeout:)`.
-private final class OutputCollector: @unchecked Sendable {
-    private let lock = NSLock()
-    private var text = ""
-
-    func drain(_ handle: FileHandle) {
-        let data = handle.readDataToEndOfFile()
-        let decoded = String(data: data, encoding: .utf8) ?? ""
-        lock.lock()
-        text += decoded
-        lock.unlock()
-    }
-
-    func take() -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        return text
     }
 }

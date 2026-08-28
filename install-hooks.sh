@@ -9,13 +9,17 @@
 #   ./install-hooks.sh setup                                  interactive; asks about all of the below
 #   ./install-hooks.sh install       [/path/to/notchling-hook]
 #   ./install-hooks.sh uninstall     [/path/to/notchling-hook]
-#   ./install-hooks.sh statusline    [/path/to/statusline-usage.sh]
+#   ./install-hooks.sh statusline    [/path/to/statusline-usage.sh] [--chain|--force]
 #   ./install-hooks.sh no-statusline
+#   ./install-hooks.sh status        [--json]
 #
 set -euo pipefail
 
 MODE="${1:-}"
-HOOK_COMMAND="${2:-}"
+HOOK_COMMAND=""
+CHAIN_REQUESTED=""
+FORCE=""
+JSON=""
 SETTINGS="$HOME/.claude/settings.json"
 
 usage() {
@@ -27,6 +31,12 @@ notchling-hooks — wire the Claude Code hooks that feed the Notchling widget
   uninstall     [PATH]        remove only the entries this installed
   statusline    [PATH]        add the plan-usage status line
   no-statusline               remove it again, if this installed it
+  status        [--json]      what is wired right now, changing nothing
+
+Claude Code has one status line slot. Where another tool already holds it:
+
+  statusline --chain          keep it, and run Notchling in front of it
+  statusline --force          replace it
 
 PATH is optional: without one, the hook binary and the status line script are found
 through PATH, the Homebrew prefix, or ~/Applications.
@@ -56,6 +66,32 @@ EVENTS=(
 die() { printf 'install-hooks: %s\n' "$1" >&2; exit 1; }
 
 command -v jq >/dev/null 2>&1 || die "jq is required"
+
+# Everything after the mode, in any order: one path, and the flags the status line modes read.
+if [ $# -gt 0 ]; then shift; fi
+for arg in "$@"; do
+  case "$arg" in
+    --chain) CHAIN_REQUESTED=1 ;;
+    --force) FORCE=1 ;;
+    --json)  JSON=1 ;;
+    -*)      die "unknown option: $arg" ;;
+    *)
+      [ -z "$HOOK_COMMAND" ] || die "unexpected argument: $arg"
+      HOOK_COMMAND=$arg
+      ;;
+  esac
+done
+
+# Swallowing them elsewhere would make `install --force` look like it did something it did not.
+if [ "$MODE" != "statusline" ] && [ -n "$CHAIN_REQUESTED$FORCE" ]; then
+  die "--chain and --force apply to \`statusline\` only"
+fi
+if [ "$MODE" != "status" ] && [ -n "$JSON" ]; then
+  die "--json applies to \`status\` only"
+fi
+if [ -n "$CHAIN_REQUESTED" ] && [ -n "$FORCE" ]; then
+  die "--chain keeps the status line that is there and --force replaces it; pick one"
+fi
 
 # --- Path resolution -------------------------------------------------------------------------
 #
@@ -143,6 +179,140 @@ wired_command() {
   printf '%s\n' "$found"
 }
 
+# --- The status line slot --------------------------------------------------------------------
+#
+# Claude Code has one, and the plan limits reach it and nothing else — no hook payload carries them.
+# So a machine that already has a status line has to run both, or go without the bars. That is what
+# the chain is for: one small script that reads the payload once, hands a copy to Notchling, and then
+# runs whatever was configured before, unchanged and owning the output.
+
+CHAIN="$HOME/.notchling/statusline.sh"
+WRAPPED="$HOME/.notchling/statusline-wrapped.sh"
+CHAIN_MARKER="notchling-statusline-chain v1"
+
+# `.statusLine.command`, or nothing at all.
+#
+# Guarded rather than trusted: `.statusLine` is an object where Claude Code wrote it, and a hand-edited
+# file where somebody put a bare string there instead would otherwise leave `jq` to fail with its own
+# error and no sign of which tool produced it.
+statusline_command() {
+  jq -r 'if (.statusLine | type) == "object" then (.statusLine.command // "") else "" end' \
+    "$SETTINGS" 2>/dev/null || printf ''
+}
+
+# What holds the slot: none, ours, a chain of ours, or somebody else's.
+#
+# Decided by what the command is rather than by where it sits, because two of the four are not paths
+# at all. A third-party line is as likely to be a bare name resolved from PATH — `ccstatusline`, an
+# nvm shim, is what prompted all of this — as a file, and a chain is wherever it was moved to.
+classify_statusline() {
+  current=$(statusline_command)
+  if [ -z "$current" ]; then
+    printf 'none\n'
+    return 0
+  fi
+
+  # By path first, before any word-splitting, and without asking whether the file is still there.
+  # A chain whose files have been deleted is still a chain, and so is one under a `$HOME` with a
+  # space in it — and mistaking either for a stranger is not a cosmetic error: chaining then wraps
+  # the chain in itself, which loses the command it was wrapping and recurses on every render.
+  if [ "$current" = "$CHAIN" ]; then
+    printf 'chain\n'
+    return 0
+  fi
+
+  # Only the first word can name a file, and it does not have to.
+  first=${current%% *}
+  if [ -f "$first" ] && grep -q "$CHAIN_MARKER" "$first" 2>/dev/null; then
+    printf 'chain\n'
+    return 0
+  fi
+
+  case "$current" in
+    *statusline-usage.sh|*statusline-usage.sh\ *) printf 'ours\n' ;;
+    *)                                            printf 'foreign\n' ;;
+  esac
+}
+
+# A chain that has been moved keeps working, because it finds its partner beside itself — so
+# everything that reads or rewrites one has to look where it actually is, not where it was written.
+adopt_chain_paths() {
+  found=$1
+  if [ ! -f "$found" ]; then
+    # Only split on a space when the first word is itself a chain. The whole string is the intended
+    # path far more often — including when it names a file that has simply been deleted — and these
+    # two variables are what `remove_chain` deletes: an earlier version split `$HOME/my home/…` and
+    # removed two files outside the home directory.
+    first=${1%% *}
+    if [ -f "$first" ] && grep -q "$CHAIN_MARKER" "$first" 2>/dev/null; then
+      found=$first
+    else
+      return 0
+    fi
+  fi
+  CHAIN=$found
+  WRAPPED="${found%/*}/statusline-wrapped.sh"
+}
+
+# Deletes the pair, and only when what is there is recognisably ours.
+remove_chain() {
+  if [ -f "$CHAIN" ] && ! grep -q "$CHAIN_MARKER" "$CHAIN" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$CHAIN"
+  [ ! -f "$WRAPPED" ] || rm -f "$WRAPPED"
+}
+
+# The wrapper, and the command it wraps in the file beside it.
+#
+# Two files rather than one because the command is kept verbatim, and a command embedded in a script
+# has to be parsed back out of it to be given back. A file has nothing to parse: whatever is in it is
+# what was configured — quotes, `$HOME`, newlines and all.
+write_chain() {
+  ours=$1
+  original=$2
+
+  [ -n "$original" ] || die "there is no status line command to wrap"
+  # The one thing that must never happen. A chain wrapping itself loses the command it was written
+  # to protect, and recurses until the machine runs out of processes.
+  [ "$original" != "$CHAIN" ] || die "refusing to wrap the chain in itself: $CHAIN"
+  case "$ours" in
+    *"'"*) die "cannot chain from a path containing a quote: $ours" ;;
+  esac
+
+  mkdir -p "$(dirname "$CHAIN")"
+  printf '%s' "$original" > "$WRAPPED"
+  chmod 0755 "$WRAPPED"
+
+  cat > "$CHAIN" <<CHAIN_SCRIPT
+#!/bin/bash
+# $CHAIN_MARKER
+#
+# Written by \`notchling-hooks statusline\`. The status line configured before it is in
+# statusline-wrapped.sh beside this file, byte for byte as it was, and still prints exactly what it
+# printed before; Notchling reads the same payload first and prints nothing at all.
+#
+# To change your own status line, edit that file. To undo all of this, run
+# \`notchling-hooks no-statusline\`, which puts the command back in settings.json and removes both.
+#
+# Deliberately not \`pipefail\`: a status line that ignores its stdin makes the write below fail, and
+# Notchling must not turn a working status line into a failing one.
+set -u
+
+payload=\$(cat)
+
+# Guarded, so uninstalling Notchling costs this status line nothing but the bars.
+notchling='$ours'
+if [ -x "\$notchling" ]; then
+  printf '%s' "\$payload" | "\$notchling" >/dev/null 2>&1
+fi
+
+# Beside this script rather than by absolute path, so moving the pair together keeps working.
+printf '%s' "\$payload" | /bin/bash "\${BASH_SOURCE[0]%/*}/statusline-wrapped.sh"
+CHAIN_SCRIPT
+  chmod 0755 "$CHAIN"
+}
+
 if [ "$MODE" = "setup" ]; then
   # Nothing here may block waiting for an answer that cannot arrive.
   if [ ! -t 0 ]; then
@@ -184,16 +354,27 @@ if [ "$MODE" = "setup" ]; then
   # 2. Status line. Separate because it costs something visible.
   printf '\n'
   current=$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null || echo "")
-  case "$current" in
-    *statusline-usage.sh) printf '  status line already configured\n' ;;
-    "")
+  case "$(classify_statusline)" in
+    ours)  printf '  status line already configured\n' ;;
+    chain) printf '  status line chained, in front of %s\n' "$(cat "$WRAPPED" 2>/dev/null || printf 'your own')" ;;
+    none)
       printf 'The status line adds plan-usage bars and per-session context, and makes Claude Code drop\n'
       printf 'some of its own footer hints.\n\n'
       if confirm "Add it?" n; then
         "$0" statusline
       fi
       ;;
-    *) printf '  status line left alone: %s is configured\n' "$current" ;;
+    *)
+      printf 'A status line is already configured:\n\n    %s\n\n' "$current"
+      printf 'Notchling can run in front of it rather than replace it: it reads the same payload, prints\n'
+      printf 'nothing, and yours prints exactly what it prints now. This is what the plan-usage bars and\n'
+      printf 'per-session context need, and it makes Claude Code drop some of its own footer hints.\n\n'
+      if confirm "Keep it and add Notchling in front?" n; then
+        "$0" statusline --chain
+      else
+        printf '  status line left alone\n'
+      fi
+      ;;
   esac
 
   # 3. Running. Only offered where it can be honoured; a source install has `make autostart`.
@@ -215,7 +396,66 @@ if [ "$MODE" = "setup" ]; then
   exit 0
 fi
 
-# --- Status line -----------------------------------------------------------------------------
+# --- Status ------------------------------------------------------------------------------------
+#
+# What is wired, changing nothing. `--json` exists because the settings window asks the same question
+# and must get the same answer: the rules for what holds the status line slot, and whether the hooks
+# are ours, live here and nowhere else. A second copy of them in Swift would drift, and the drift
+# would show up as a button that lies about what it is about to do.
+if [ "$MODE" = "status" ]; then
+  # Nothing is created here, not even an empty settings file. This is the one mode that answers a
+  # question rather than changing something, the settings window calls it every time it opens, and
+  # every reader below already treats a missing file as an empty one.
+  hook=$(resolve_hook 2>/dev/null || printf '')
+  wired=$(wired_command || printf '')
+  if plugin_provides_hooks; then
+    hooks=plugin
+  elif [ -z "$wired" ]; then
+    hooks=none
+  elif [ "$wired" = "$hook" ]; then
+    hooks=wired
+  else
+    # Wired, but to a copy of the hook that is not the one this script resolves — an install that
+    # moved, and the case `setup` offers to re-point.
+    hooks=elsewhere
+  fi
+
+  line=$(classify_statusline)
+  current=$(statusline_command)
+  [ "$line" != "chain" ] || adopt_chain_paths "$current"
+  wrapped=""
+  [ "$line" != "chain" ] || wrapped=$(cat "$WRAPPED" 2>/dev/null || printf '')
+  script=$(resolve_statusline 2>/dev/null || printf '')
+
+  if [ -n "$JSON" ]; then
+    jq -n \
+      --arg hooks "$hooks" --arg hookCommand "$wired" --arg hookResolved "$hook" \
+      --arg statusLine "$line" --arg statusLineCommand "$current" \
+      --arg wrapped "$wrapped" --arg statusLineResolved "$script" \
+      '{
+        hooks: $hooks, hookCommand: $hookCommand, hookResolved: $hookResolved,
+        statusLine: $statusLine, statusLineCommand: $statusLineCommand,
+        wrapped: $wrapped, statusLineResolved: $statusLineResolved
+      }'
+    exit 0
+  fi
+
+  case "$hooks" in
+    wired)     printf 'hooks         wired to %s\n' "$wired" ;;
+    elsewhere) printf 'hooks         wired to %s, which is not the copy found now\n' "$wired" ;;
+    plugin)    printf 'hooks         provided by the Notchling plugin\n' ;;
+    *)         printf 'hooks         not wired\n' ;;
+  esac
+  case "$line" in
+    ours)    printf 'status line   %s\n' "$current" ;;
+    chain)   printf 'status line   Notchling, in front of: %s\n' "$wrapped" ;;
+    foreign) printf 'status line   %s — not ours, and not chained\n' "$current" ;;
+    *)       printf 'status line   none, so no plan usage or per-session context\n' ;;
+  esac
+  exit 0
+fi
+
+# --- Status line -------------------------------------------------------------------------------
 #
 # A separate mode because it is a separate decision with a visible cost: configuring any status line
 # makes Claude Code drop some of its footer hints.
@@ -226,44 +466,164 @@ if [ "$MODE" = "statusline" ] && [ -z "$HOOK_COMMAND" ]; then
 fi
 
 if [ "$MODE" = "statusline" ] || [ "$MODE" = "no-statusline" ]; then
-  SETTINGS_BACKUP="$SETTINGS.notchling-backup-$(date +%Y%m%d%H%M%S)"
   mkdir -p "$(dirname "$SETTINGS")"
   [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
   jq empty "$SETTINGS" 2>/dev/null || die "$SETTINGS is not valid JSON — not touching it"
-  cp "$SETTINGS" "$SETTINGS_BACKUP"
-  TMP=$(mktemp "$SETTINGS.notchling.XXXXXX")
+
+  # Valid JSON is not the same as a settings file this can reason about. `.statusLine` is an object
+  # everywhere Claude Code writes one, and merging into a hand-edited string leaves `jq` to fail with
+  # an error naming neither this script nor the file it was reading.
+  case "$(jq -r '.statusLine | type' "$SETTINGS" 2>/dev/null || printf 'null')" in
+    null|object) ;;
+    *) die "$SETTINGS has a .statusLine that is not an object — not touching it" ;;
+  esac
+
+  # Everything is decided before anything is written. An earlier version took the backup and the
+  # temporary file first, so a run that refused to change a thing still left both of them behind in
+  # ~/.claude — the one directory this is supposed to tread carefully in.
+  STATE=$(classify_statusline)
+  CURRENT=$(statusline_command)
+  NEW_COMMAND=""
+  SET_INTERVAL=""
+  FORCED_OVER=""
+
+  [ "$STATE" != "chain" ] || adopt_chain_paths "$CURRENT"
 
   if [ "$MODE" = "statusline" ]; then
     [ -n "$HOOK_COMMAND" ] || die "no status line script given"
     [ -x "$HOOK_COMMAND" ] || die "status line script is not executable: $HOOK_COMMAND"
-    existing=$(jq -r '.statusLine.command // ""' "$SETTINGS")
-    case "$existing" in
-      ""|*statusline-usage.sh) ;;
-      *) die "a different status line is already configured:
-    $existing
-  Refusing to replace it. Merge the two by hand, or move yours aside first." ;;
-    esac
-    # refreshInterval keeps the reset countdown and the freshness stamp moving while a session sits
-    # idle; without it the line only re-runs on events.
-    jq --arg cmd "$HOOK_COMMAND" \
-      '.statusLine = {"type": "command", "command": $cmd, "refreshInterval": 60}' \
-      "$SETTINGS" > "$TMP"
+
+    # `--force` means ours and nothing else, whatever is there — including a chain of our own, which
+    # is the one way back out of chaining.
+    if [ -n "$FORCE" ] && [ "$STATE" != "ours" ]; then
+      NEW_COMMAND=$HOOK_COMMAND
+      SET_INTERVAL=1
+      FORCED_OVER=$STATE
+    else
+      case "$STATE" in
+        ours)
+          # Re-pointed rather than left alone when what is recorded is not what was resolved now.
+          # Moving between a clone, ~/Applications and Homebrew otherwise leaves settings.json naming
+          # a script that is no longer there, and the bars stop with nothing on screen to say why.
+          if [ "$CURRENT" = "$HOOK_COMMAND" ]; then
+            printf 'install-hooks: status line already configured\n'
+            exit 0
+          fi
+          printf 'install-hooks: re-pointing from %s\n' "$CURRENT"
+          NEW_COMMAND=$HOOK_COMMAND
+          SET_INTERVAL=1
+          ;;
+
+        # Rewritten rather than left alone: this is what moves an older chain onto a new path to the
+        # app, or onto a newer wrapper, and it is why the wrapper carries a version in its marker.
+        chain)
+          [ -f "$WRAPPED" ] || die "$CURRENT is a Notchling chain, but the status line it was wrapping
+  is gone. The newest $SETTINGS.notchling-backup-* still has that command; or run this again with
+  --force to keep only Notchling."
+          write_chain "$HOOK_COMMAND" "$(cat "$WRAPPED")"
+          printf 'install-hooks: chain refreshed at %s\n' "$CHAIN"
+          exit 0
+          ;;
+
+        foreign)
+          if [ -z "$CHAIN_REQUESTED" ]; then
+            if [ -t 0 ]; then
+              printf 'A status line is already configured:\n\n    %s\n\n' "$CURRENT"
+              printf 'There is one slot, and the plan limits reach it and nothing else. Notchling can run in front\n'
+              printf 'of yours instead of replacing it: it reads the same payload, prints nothing, and yours prints\n'
+              printf 'exactly what it prints now. `notchling-hooks no-statusline` puts it back.\n\n'
+              if ! confirm "Keep it and add Notchling in front?" y; then
+                printf 'install-hooks: left alone\n'
+                exit 0
+              fi
+            else
+              # Refused rather than assumed, because this is somebody else's configuration and nothing
+              # here can ask. Both ways out are named, which is what the old message was missing.
+              die "a different status line is already configured:
+    $CURRENT
+  Keep it and run Notchling in front of it with \`notchling-hooks statusline --chain\`, or replace
+  it with \`--force\`."
+            fi
+          fi
+
+          write_chain "$HOOK_COMMAND" "$CURRENT"
+          NEW_COMMAND=$CHAIN
+          ;;
+
+        none)
+          NEW_COMMAND=$HOOK_COMMAND
+          SET_INTERVAL=1
+          ;;
+      esac
+    fi
   else
     # Remove only a status line we installed, so `make uninstall` cannot throw away someone else's.
-    existing=$(jq -r '.statusLine.command // ""' "$SETTINGS")
-    case "$existing" in
-      *statusline-usage.sh) jq 'del(.statusLine)' "$SETTINGS" > "$TMP" ;;
-      "")                   cp "$SETTINGS" "$TMP" ;;
-      *)                    rm -f "$TMP"
-                            printf 'install-hooks: leaving a status line we did not install:\n    %s\n' "$existing"
-                            exit 0 ;;
+    # Both of the do-nothing answers leave before any file is created, for the same reason the
+    # refusal above does.
+    case "$STATE" in
+      none)
+        printf 'install-hooks: no status line configured\n'
+        exit 0
+        ;;
+      foreign)
+        printf 'install-hooks: leaving a status line we did not install:\n    %s\n' "$CURRENT"
+        exit 0
+        ;;
+      chain)
+        [ -f "$WRAPPED" ] || die "$WRAPPED is gone, so there is nothing to put back.
+  The newest $SETTINGS.notchling-backup-* still has the command that was wrapped."
+        ;;
     esac
   fi
 
-  jq empty "$TMP" 2>/dev/null || { rm -f "$TMP"; die "produced invalid JSON (backup: $SETTINGS_BACKUP)"; }
-  mv "$TMP" "$SETTINGS"
+  SETTINGS_BACKUP="$SETTINGS.notchling-backup-$(date +%Y%m%d%H%M%S)"
+  cp "$SETTINGS" "$SETTINGS_BACKUP"
+  TMP=$(mktemp "$SETTINGS.notchling.XXXXXX")
+  trap 'rm -f "$TMP"' EXIT
+
   if [ "$MODE" = "statusline" ]; then
-    printf 'install-hooks: status line installed in %s\n' "$SETTINGS"
+    # Only `command` is ours to set. Replacing the whole object — which this used to do — takes
+    # `padding` and anything else Claude Code learns to keep beside it with it; ccstatusline, the
+    # tool that made chaining necessary, merges into what is already there rather than overwriting.
+    #
+    # `refreshInterval` is set only where there was no status line of somebody else's. It keeps the
+    # reset countdown moving while a session sits idle, and imposing it on a line that was already
+    # there would change how often that line runs, which is not ours to decide.
+    if [ -n "$SET_INTERVAL" ]; then
+      jq --arg cmd "$NEW_COMMAND" \
+        '.statusLine = ((.statusLine // {}) + {"type": "command", "command": $cmd})
+         | (if .statusLine.refreshInterval == null then .statusLine.refreshInterval = 60 else . end)' \
+        "$SETTINGS" > "$TMP"
+    else
+      jq --arg cmd "$NEW_COMMAND" \
+        '.statusLine = ((.statusLine // {}) + {"type": "command", "command": $cmd})' \
+        "$SETTINGS" > "$TMP"
+    fi
+  else
+    case "$STATE" in
+      ours)  jq 'del(.statusLine)' "$SETTINGS" > "$TMP" ;;
+      chain) jq --arg cmd "$(cat "$WRAPPED")" '.statusLine.command = $cmd' "$SETTINGS" > "$TMP" ;;
+    esac
+  fi
+
+  jq empty "$TMP" 2>/dev/null || die "produced invalid JSON (backup: $SETTINGS_BACKUP)"
+  mv "$TMP" "$SETTINGS"
+  trap - EXIT
+
+  if [ "$MODE" = "statusline" ]; then
+    if [ "$NEW_COMMAND" = "$CHAIN" ]; then
+      printf 'install-hooks: Notchling now runs in front of your status line\n'
+      printf 'install-hooks: yours is kept, unchanged, at %s\n' "$WRAPPED"
+    else
+      if [ "$FORCED_OVER" = "chain" ]; then
+        remove_chain
+        printf 'install-hooks: the chain is gone, and with it the status line it was wrapping\n'
+      fi
+      printf 'install-hooks: status line installed in %s\n' "$SETTINGS"
+    fi
+  elif [ "$STATE" = "chain" ]; then
+    remove_chain
+    printf 'install-hooks: your status line is back in %s\n' "$SETTINGS"
   else
     printf 'install-hooks: status line removed from %s\n' "$SETTINGS"
   fi
@@ -320,7 +680,7 @@ elif [ "$MODE" = "uninstall" ]; then
     end
   '
 else
-  die "unknown mode: $MODE (expected setup, install, uninstall, statusline or no-statusline)"
+  die "unknown mode: $MODE (expected setup, status, install, uninstall, statusline or no-statusline)"
 fi
 
 TMP=$(mktemp "$SETTINGS.notchling.XXXXXX")

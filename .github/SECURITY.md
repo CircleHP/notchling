@@ -29,7 +29,19 @@ widget. Anything that can make it violate that is a genuine finding.
 
 **`install-hooks.sh` edits `~/.claude/settings.json`.** It backs the file up first, appends to the
 existing hook arrays so other tools' hooks survive, and removes only its own entries. A path that
-makes it clobber unrelated configuration, or write a command it did not resolve, is a finding.
+makes it clobber unrelated configuration, or write a command it did not resolve, is a finding. The
+settings window runs this same script as a subprocess, from the copy in its own bundle rather than one
+found on `PATH`; a change that lets it run something else, or change a configuration without being
+clicked, belongs here too.
+
+**The status line chain executes a command this project did not write.** Claude Code has one status
+line slot, so where another tool holds it `notchling-hooks statusline` can generate
+`~/.notchling/statusline.sh`, which runs Notchling's script and then the command that was configured
+before — kept verbatim in `statusline-wrapped.sh` and run with `bash`, exactly as Claude Code would
+have run it. It is the user's own command, taken from their own settings file and nowhere else.
+Anything that lets what runs there come from somewhere other than that file, or that makes the pair
+resolve to a path outside `~/.notchling` — both are passed to `rm -f` when the chain is undone — is a
+finding.
 
 **The spool is a directory of files other processes can write.** `~/.notchling/events/` is created
 `0700` and every file in it is parsed by the widget. Payload handling that can be made to crash or

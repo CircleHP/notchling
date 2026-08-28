@@ -93,7 +93,8 @@ notchling-hooks setup
 ```
 
 `setup` asks before it changes anything: it wires the Claude Code hooks, offers the plan-usage status
-line, and starts the widget now and at login. Then restart any Claude sessions that were already
+line — running it in front of another tool's status line rather than replacing it, if one is already
+there — and starts the widget now and at login. Then restart any Claude sessions that were already
 running, so they pick up the hooks.
 
 Nothing is compiled — the formula installs a prebuilt universal bundle, so no Xcode and no toolchain.
@@ -105,8 +106,9 @@ Use the full `CircleHP/notchling/notchling` name rather than tapping first: Home
 third-party tap when you name it in full, and a bare `brew install notchling` will be refused.
 
 Two commands come with it: `notchling-hooks`, which prints what it can do when run with no
-arguments, and `notchling-sessions`, which lists what the widget can see and is the first thing to
-reach for when a row looks wrong.
+arguments and reports what is wired with `notchling-hooks status`, and `notchling-sessions`, which
+lists what the widget can see and is the first thing to reach for when a row looks wrong. The settings
+window does the same wiring with buttons, for anyone who would rather not.
 
 ### Hooks from a plugin instead
 
@@ -169,9 +171,15 @@ matches. Warp is unaffected.
 
 Whichever route, the only file outside its own install directory that Notchling touches is
 `~/.claude/settings.json`, it backs that up first, and it **appends** to the existing hook arrays so
-other tools' hooks survive. The Homebrew formula never touches it: a package manager rewriting another
-tool's configuration would be invisible and undone by nothing, which is why `setup` is a separate
-command that asks.
+other tools' hooks survive. Claude Code has only one *status line* slot, which cannot be appended to,
+so where another tool holds it Notchling offers to run in front of it — reading the same payload,
+printing nothing — rather than replacing it. Your command is kept verbatim and put back if you undo it.
+
+The settings window can do the same wiring, and clicking one of those buttons is the only way the app
+itself writes `~/.claude/settings.json`; it runs the same installer, with the same backup, and asks
+before changing anything another tool configured. The Homebrew formula never touches that file at all:
+a package manager rewriting another tool's configuration would be invisible and undone by nothing,
+which is why `setup` is a separate command that asks.
 
 The app signs itself ad-hoc, which is free and requires no Apple account. One consequence, and only for
 people using the **iTerm2 or Terminal.app** jump: macOS asks permission to control them the first time,

@@ -10,7 +10,9 @@ It reads Claude Code's own on-disk session registry and receives its hook events
 It sends no telemetry, ever, and reports nothing about you anywhere. It reads two entries from a
 session's own transcript — the title Claude derives, and a colour set with `/color` — because they are
 recorded nowhere else; that is a local file read and nothing leaves the machine.
-Everything it writes lives under `~/.notchling/`.
+Everything it writes lives under `~/.notchling/`, apart from `~/.claude/settings.json` — the hook
+entries and the optional status line, written only by `notchling-hooks` or by a button in the settings
+window, backed up on every change, and removable by the same commands.
 
 It makes one kind of network connection, and never without being told to. The panel asks once whether
 it should check daily for a new release; unanswered and answered-no both mean it never connects of its

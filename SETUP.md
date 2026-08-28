@@ -33,9 +33,14 @@ Name the formula in full. Homebrew trusts a third-party tap when you name it in 
 `brew install notchling` after tapping is refused.
 
 `notchling-hooks setup` asks three questions and acts on the answers: wire the Claude Code hooks, add
-the plan-usage status line, start the widget now and at login. Each is available on its own —
-`notchling-hooks install`, `notchling-hooks statusline`, `brew services start notchling` — and
-`notchling-hooks` with no arguments prints what it can do.
+the plan-usage status line, start the widget now and at login. Where another tool already has the
+status line, the second question becomes whether to run in front of it rather than replace it. Each is
+available on its own — `notchling-hooks install`, `notchling-hooks statusline`,
+`brew services start notchling` — `notchling-hooks status` prints what is wired without changing
+anything, and `notchling-hooks` with no arguments prints what it can do.
+
+All of it is in the settings window too, behind the gear in the panel: a row each for the hooks and the
+status line, saying what is wired now, with the button that changes it.
 
 Then restart any Claude sessions that were already running so they pick up the hooks. They still
 *appear* immediately, they just won't report fine-grained state until restarted.
@@ -136,8 +141,30 @@ Since a row is being spent either way, the script prints something worth it:
 Opus 5  my-project  ctx 37%  5h [████······] 57% left ⟳ 2h10m  7d 88%
 ```
 
-`notchling-hooks no-statusline` removes it. The installer refuses to overwrite a status line it didn't write, and
-the remover refuses to delete one — so both are safe to run if you already have your own.
+`notchling-hooks no-statusline` removes it again.
+
+**If you already run a status line, both can have the slot.** Claude Code has one, and these numbers
+reach it and nothing else, so `notchling-hooks statusline` offers to run Notchling *in front of* what
+is already there rather than replacing it:
+
+```
+A status line is already configured:
+
+    ccstatusline
+
+Keep it and add Notchling in front? [Y/n]
+```
+
+Yes writes `~/.notchling/statusline.sh`, which reads the payload once, hands a copy to Notchling —
+which prints nothing — and then runs your command, which prints exactly what it printed before. Your
+command is kept verbatim in `statusline-wrapped.sh` beside it; edit that file to change your status
+line, and `notchling-hooks no-statusline` puts it back in `settings.json` and removes both. On a pipe,
+where the question cannot be asked, the same thing is `--chain`, and `--force` replaces yours instead.
+
+Two properties worth knowing. It costs about **95ms** per render on top of the two commands
+themselves — measured chaining `ccstatusline`, which takes 215ms alone against Notchling's 55ms. And
+Notchling's half is guarded, so if you ever uninstall the app your status line keeps printing exactly
+as it does now; it just stops feeding the bars.
 
 **This needs a session restart, and nothing does it for you.** Claude Code reads `statusLine` at
 session start, exactly as it reads hooks, so adding it from inside a live session does nothing for that
@@ -147,6 +174,19 @@ on the compact strip, so open the notch to see them.
 
 Because a status line only runs while its session is on screen, these numbers go stale when nothing is
 running. The panel dims them and says so rather than presenting old numbers as current.
+
+**All of this is also in the settings window.** The gear in the panel has a **Claude Code** block
+that reports what is wired — hooks, and what holds the status line slot — with one button each:
+
+```
+Hooks         Wired                              [Unwire]
+Plan usage    Wired, in front of ccstatusline    [Remove]
+```
+
+The buttons run this same script, so they back `settings.json` up the same way and refuse the same
+things; where another tool holds the slot, the window asks whether to run in front of it or replace it
+before touching anything. `notchling-hooks status` prints the same answer in a terminal, and
+`--json` is what the window reads — the rules live in the script, so the two cannot disagree.
 
 **Hiding the bars again is a checkbox.** The settings window behind the gear has a **Show plan usage**
 switch. Off, the panel drops that block and the sweep stops reading `~/.notchling/usage/` for it; the
@@ -310,6 +350,8 @@ reliably clears it.
 | `~/.notchling/usage.json` | plan limits, last writer wins. Kept for a widget from before `usage/` existed. |
 | `~/.notchling/sessions/` | per-session context and model. Pruned after 3 days. |
 | `~/.notchling/logs/` | only when you press **Collect Logs…**. The five most recent are kept. |
+| `~/.notchling/statusline.sh` | only when chaining. Runs Notchling in front of the status line you already had. |
+| `~/.notchling/statusline-wrapped.sh` | only when chaining. Your own status line command, verbatim, and what `no-statusline` puts back. |
 | `~/.notchling/upgrade.log` | only when you install an update from the panel. What `git` and `brew` said. |
 | `$(brew --prefix)/opt/notchling/Notchling.app` | the app, installed by Homebrew. Version-independent path. |
 | `$(brew --prefix)/bin/notchling-hook`, `-hooks`, `-sessions` | the helpers, on `PATH`. Repointed by every upgrade. |
@@ -330,8 +372,9 @@ brew uninstall notchling
 brew untap CircleHP/notchling
 ```
 
-`uninstall` removes only the entries it installed, and `no-statusline` refuses to remove a status line
-it did not write, so both are safe alongside other tools. Homebrew does not delete `~/.notchling`, so
+`uninstall` removes only the entries it installed, and `no-statusline` either removes our status line,
+restores the one we chained in front of, or leaves a stranger's alone — so both are safe alongside
+other tools. Homebrew does not delete `~/.notchling`, so
 remove it by hand if you want the session state gone too. The `settings.json` backups are left behind
 deliberately.
 
@@ -386,8 +429,9 @@ says what each entry actually is, including Claude Code's own pooled background 
 widget hides).
 
 **Usage bars missing** — five checks, in order. Start with the **Show plan usage** switch in the
-settings window: off, there are no bars whatever else is true. Then the status line is opt-in, so run
-`notchling-hooks statusline` first, or answer yes when `notchling-hooks setup` asks. Then **restart your sessions**: `statusLine` is read at session
+settings window: off, there are no bars whatever else is true. Then the status line is opt-in: the settings window's **Plan usage** row says whether it is wired and
+wires it, or run `notchling-hooks statusline` — and if another tool already holds that slot, both offer
+to run in front of it rather than refusing. Then **restart your sessions**: `statusLine` is read at session
 start, and a session that was already running will never pick it up however long you wait. Confirm it
 landed with `jq '.statusLine.command' ~/.claude/settings.json`. Finally check that
 `~/.notchling/usage/` has a file in it — if it does and the panel still looks bare, the bars are in the
