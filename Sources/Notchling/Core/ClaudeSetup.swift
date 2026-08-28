@@ -115,11 +115,65 @@ enum ClaudeSetup {
         _ = try run(["statusline", occupied == .replace ? "--force" : "--chain"])
     }
 
+    // MARK: - The environment the script expects
+
+    /// A `PATH` the script's own resolution can work with.
+    ///
+    /// This is the whole reason the buttons need anything but the script. `notchling-hooks` finds the
+    /// hook binary with `command -v`, and Homebrew's prefix by running `brew` — both of which assume
+    /// the environment a terminal has. A launchd job has none of it: `PATH` is `/usr/bin:/bin` and
+    /// four more, so nothing resolves, and rows that hide a button they cannot honour hide all of
+    /// them. The window then reports "Not wired" and offers no way to wire it, which is worse than
+    /// the refusal this whole feature exists to replace.
+    ///
+    /// Two sources, because neither is enough. The prefix is derived from the running bundle, the
+    /// same way the update path finds it — deterministic, correct for this install, and never a
+    /// literal in this binary. The login shell's `PATH` is asked for as well because `claude` itself
+    /// is often somewhere only that knows about — an nvm shim, typically — and without it
+    /// `plugin_provides_hooks` answers no for a machine whose hooks come from the plugin, which is
+    /// the one machine where wiring `settings.json` too would report every event twice.
+    private nonisolated static var environment: [String: String] {
+        ["PATH": searchPath(
+            prefix: HomebrewInstall.current()?.prefix,
+            loginPath: loginPath,
+            inherited: ProcessInfo.processInfo.environment["PATH"]
+        )]
+    }
+
+    /// Ordered by how much each source can be trusted for *this* install: the prefix this bundle was
+    /// launched from first, then what a terminal here would have, then whatever we were given — which
+    /// under launchd is the bare minimum and under `make run` is everything.
+    nonisolated static func searchPath(prefix: URL?, loginPath: String?, inherited: String?) -> String {
+        var parts: [String] = []
+        if let prefix { parts.append(prefix.appendingPathComponent("bin").path) }
+        if let loginPath, !loginPath.isEmpty { parts.append(loginPath) }
+        parts.append(inherited.flatMap { $0.isEmpty ? nil : $0 } ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+        return parts.joined(separator: ":")
+    }
+
+    /// What a terminal on this machine would have. Asked once — a login shell sources everything the
+    /// person has configured, which is not free — and never fatal: without it the prefix above still
+    /// resolves everything this project ships.
+    private nonisolated static let loginPath: String? = {
+        guard let shell = ProcessInfo.processInfo.environment["SHELL"], !shell.isEmpty else { return nil }
+        guard let result = try? Command.run(
+            URL(fileURLWithPath: shell),
+            ["-lc", "printf %s \"$PATH\""],
+            timeout: 10
+        ), result.status == 0 else { return nil }
+
+        // The last line, not the whole output: `Command` folds stderr in with stdout, and a login
+        // shell that greets you would otherwise become part of the `PATH`.
+        let last = result.output.split(separator: "\n").last.map(String.init) ?? ""
+        let trimmed = last.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }()
+
     // MARK: - Running it
 
     private nonisolated static func run(_ arguments: [String]) throws -> String {
         guard let script else { throw Failure.unavailable }
-        let result = try Command.run(script, arguments, timeout: timeout)
+        let result = try Command.run(script, arguments, environment: environment, timeout: timeout)
         guard result.status == 0 else { throw Failure.failed(reason(from: result.output)) }
         return result.output
     }
