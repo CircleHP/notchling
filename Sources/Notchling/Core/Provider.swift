@@ -11,6 +11,29 @@
 enum Provider: String, Codable, Sendable {
     case claude
     case codex
+
+    var capabilities: Capabilities {
+        switch self {
+        case .claude: Capabilities(hasTranscriptMarks: true, hasStatusLineMetrics: true)
+        case .codex: Capabilities(hasTranscriptMarks: false, hasStatusLineMetrics: false)
+        }
+    }
+}
+
+/// Which of the widget's sources exist for an agent.
+///
+/// Asked rather than the provider being named, so the store cannot come to contain a `switch provider`
+/// — the one shape this seam exists to prevent. A flag here is a statement about a substrate, and it
+/// flips the day that substrate appears without any view or rule changing.
+struct Capabilities: Equatable, Sendable {
+    /// A per-session transcript carrying the marks the widget reads: the title the agent derives from
+    /// the conversation, a name a person set, and a colour. These are records in Claude Code's own
+    /// transcript format, under `~/.claude/projects`.
+    var hasTranscriptMarks: Bool
+
+    /// A status line, installed by this widget, reporting context fill and cost per session. Claude
+    /// Code has one slot for it; nothing else does.
+    var hasStatusLineMetrics: Bool
 }
 
 /// How a session is identified everywhere it is used as a key.

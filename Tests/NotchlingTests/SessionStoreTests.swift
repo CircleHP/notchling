@@ -1373,6 +1373,110 @@ private func settle(
     return condition()
 }
 
+/// The same, for a session with no registry to re-scan: something still has to keep poking the store so
+/// the reader's hop has somewhere to land.
+@MainActor
+private func settle(
+    _ store: SessionStore,
+    poke: () -> Void,
+    timeout: TimeInterval = 3,
+    until condition: () -> Bool
+) async -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if condition() { return true }
+        poke()
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+    return condition()
+}
+
+/// Three of the widget's inputs belong to one agent. Each fails quietly when handed another's session:
+/// a row deleted on a schedule, a conversation read off disk for nothing, a reading from someone else.
+@Suite("SessionStore — what belongs to which agent")
+@MainActor
+struct ProviderScopingTests {
+    /// The registry is Claude Code's, so a session of any other agent is missing from every snapshot of
+    /// it by construction. Reaped on that, a Codex row would appear and then vanish one grace period
+    /// later, for as long as anyone cared to keep starting them.
+    @Test("an empty Claude snapshot does not reap another agent's session")
+    func emptySnapshotSparesOtherAgents() {
+        let clock = TestClock()
+        let store = SessionStore(now: clock.now)
+        store.apply(hookEvent("UserPromptSubmit", session: "cc1"))
+        store.apply(codexEvent("UserPromptSubmit", session: "cx1"))
+        #expect(store.sessions.count == 2)
+
+        // The first pass only stamps when a session went missing; removal waits out the grace period.
+        store.apply(registry: [])
+        clock.advance(SessionStore.registryGrace + 1)
+        store.apply(registry: [])
+
+        #expect(store.session(key: SessionKey(provider: .claude, id: "cc1")) == nil,
+                "gone from Claude's registry for longer than the grace period")
+        #expect(store.session(key: SessionKey(provider: .codex, id: "cx1")) != nil,
+                "no registry to be absent from is not evidence of anything")
+    }
+
+    /// A pid is the kernel's, so this rule has to hold for a *dead* one too — the path that removes a
+    /// Claude session immediately rather than after the grace period.
+    @Test("a snapshot reaping a dead Claude session still spares another agent's")
+    func deadClaudePIDSparesOtherAgents() {
+        let store = SessionStore()
+        store.apply(hookEvent("UserPromptSubmit", session: "cc1", ["pid": 4242]))
+        store.apply(codexEvent("UserPromptSubmit", session: "cx1", ["pid": 4242]))
+
+        store.apply(registry: [])
+
+        #expect(store.session(key: SessionKey(provider: .claude, id: "cc1")) == nil, "a pid it cannot find")
+        #expect(store.session(key: SessionKey(provider: .codex, id: "cx1")) != nil)
+    }
+
+    /// The status line is Claude Code's and writes one file per session id. Two agents can hand out the
+    /// same id, and the row that borrowed the other's reading would show a context fill and a model
+    /// belonging to a different conversation.
+    @Test("a reading from Claude's status line is not lent to another agent")
+    func metricsAreNotSharedAcrossAgents() {
+        let reading = SessionMetrics(
+            contextUsedPercent: 42, contextWindowSize: 200_000, model: "Sonnet",
+            effort: nil, linesAdded: 1, linesRemoved: 2, updatedAt: Date()
+        )
+        let store = SessionStore(metrics: { ["shared": reading] })
+        store.apply(hookEvent("UserPromptSubmit", session: "shared"))
+        store.apply(codexEvent("UserPromptSubmit", session: "shared"))
+
+        store.tick()
+
+        #expect(store.session(key: SessionKey(provider: .claude, id: "shared"))?.metrics == reading)
+        #expect(store.session(key: SessionKey(provider: .codex, id: "shared"))?.metrics == nil)
+    }
+
+    /// Codex names a transcript in every payload, and it is a rollout file in its own format. Scanning
+    /// it reads however much of somebody's conversation the limit allows, to look for records that
+    /// cannot be in it.
+    @Test("another agent's transcript is never read for Claude's marks")
+    func transcriptIsNotScannedForOtherAgents() async {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchling-scope-\(UUID().uuidString).jsonl")
+        try! #"{"type":"ai-title","aiTitle":"Ship it","sessionId":"s"}"#
+            .appending("\n").write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let store = SessionStore()
+        store.apply(codexEvent("SessionStart", session: "cx1", ["transcriptPath": url.path]))
+
+        // The same file under a Claude session does yield the title, so the file is not the reason.
+        let claudeGotIt = await settle(store, poke: {
+            store.apply(hookEvent("SessionStart", session: "cc1", ["transcriptPath": url.path]))
+        }) {
+            store.session(key: SessionKey(provider: .claude, id: "cc1"))?.aiTitle == "Ship it"
+        }
+
+        #expect(claudeGotIt)
+        #expect(store.session(key: SessionKey(provider: .codex, id: "cx1"))?.aiTitle == nil)
+    }
+}
+
 /// End to end over real files, because the defect these cover was never in one function: every rule
 /// held on its own, and the name still degraded once Claude Code renamed the session underneath us.
 @Suite("SessionStore — where a session's name comes from")

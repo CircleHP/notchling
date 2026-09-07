@@ -90,14 +90,17 @@ final class SessionStore {
     /// they are worth pinning down deterministically.
     private let now: () -> Date
     private let readPendingVersion: () -> String?
+    private let readMetrics: @MainActor () -> [String: SessionMetrics]
     private var lastVersionCheck: Date?
 
     init(
         now: @escaping () -> Date = { Date.now },
-        pendingVersion: @escaping () -> String? = { InstalledBuild.pendingVersion() }
+        pendingVersion: @escaping () -> String? = { InstalledBuild.pendingVersion() },
+        metrics: @escaping @MainActor () -> [String: SessionMetrics] = { SessionMetricsReader.readAll() }
     ) {
         self.now = now
         self.readPendingVersion = pendingVersion
+        self.readMetrics = metrics
     }
 
     /// The only way a session leaves the store.
@@ -455,13 +458,17 @@ final class SessionStore {
 
     // MARK: - Registry
 
+    /// Claude Code's own registry, so everything it describes is a Claude session — and, the part that
+    /// matters more than it reads, absence from a snapshot is evidence about *those* alone. A session
+    /// whose agent keeps no registry is missing from every snapshot by construction, and reaping on
+    /// that would delete it a grace period after it first appeared.
     func apply(registry entries: [RegistryEntry]) {
-        // The registry is Claude Code's own, so everything it describes is a Claude session.
-        let keys = entries.map { SessionKey(provider: .claude, id: $0.sessionId) }
+        let provider = Provider.claude
+        let keys = entries.map { SessionKey(provider: provider, id: $0.sessionId) }
         let seen = Set(keys)
 
         for (entry, key) in zip(entries, keys) {
-            var session = index[key] ?? Session(sessionID: entry.sessionId, provider: .claude)
+            var session = index[key] ?? Session(sessionID: entry.sessionId, provider: provider)
             let previous = session.state
 
             adopt(pid: entry.pid, startedAt: nil, on: &session)
@@ -528,7 +535,7 @@ final class SessionStore {
         // dropping the session then makes it flicker. After the grace period it is gone even if its
         // pid looks alive, because a pid can be recycled.
         let stamp = now()
-        for (key, var session) in index where !seen.contains(key) {
+        for (key, var session) in index where key.provider == provider && !seen.contains(key) {
             // A pid we have and cannot find is proof the session is gone. No pid at all is not: the
             // hook resolves it from `CLAUDE_PID` or a walk up the parent chain, and both come up
             // empty often enough. Reading that as death removed the grace period from the one case
@@ -556,6 +563,10 @@ final class SessionStore {
     /// they have to be read rather than received. Cheap in practice: the reader does nothing unless
     /// the file changed since it last looked, and it reads backwards from the end.
     private func readTranscriptMarks(for key: SessionKey) {
+        // The marks are records in Claude Code's own transcript format. Another agent's transcript is a
+        // different file saying different things: scanning it would read megabytes of somebody's
+        // conversation off disk on every change, looking for records that cannot be in it.
+        guard key.provider.capabilities.hasTranscriptMarks else { return }
         guard let session = index[key] else { return }
         let path = session.transcriptPath
             ?? session.cwd.flatMap { TranscriptReader.path(forSession: key.id, cwd: $0) }
@@ -622,15 +633,19 @@ final class SessionStore {
 
         refreshPendingVersion()
 
-        let metrics = SessionMetricsReader.readAll()
+        let metrics = readMetrics()
 
         var changed = false
         let stamp = now()
 
         for (key, var session) in index {
-            // The status line writes one file per session id, and it is Claude Code's status line.
-            if session.metrics != metrics[session.sessionID] {
-                session.metrics = metrics[session.sessionID]
+            // The status line writes one file per session id and it is Claude Code's, so an agent that
+            // has none must not be handed a reading that merely shares an id with one of its sessions.
+            let reading = session.provider.capabilities.hasStatusLineMetrics
+                ? metrics[session.sessionID]
+                : nil
+            if session.metrics != reading {
+                session.metrics = reading
                 index[key] = session
                 changed = true
             }
