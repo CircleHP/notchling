@@ -1373,6 +1373,132 @@ private func settle(
     return condition()
 }
 
+/// Two turn endings Claude Code has no event for. Both are quiet, and read wrongly by default: an
+/// interrupt as a finish, a compaction as a stall.
+@Suite("SessionStore — interrupted and compacting")
+@MainActor
+struct LifecycleEventTests {
+    private let t = Date(timeIntervalSince1970: 1_000_000)
+    private let key = SessionKey(provider: .codex, id: "cx1")
+
+    /// The whole point of not calling it `.done`: `.done` is notifiable, so it plays the success cue and
+    /// drops the notch open to announce a result that was never produced.
+    @Test("an interrupted turn ends without claiming to have finished")
+    func interruptIsNotAFinish() {
+        let store = SessionStore()
+        var landedIn: [SessionState] = []
+        store.onTransition = { _, _, new in landedIn.append(new) }
+
+        store.apply(codexEvent("UserPromptSubmit", at: t))
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Bash", "toolUseId": "e1"]))
+        store.apply(codexEvent("Interrupt", at: t + 2))
+
+        let session = try! #require(store.session(key: key))
+        #expect(session.state == .idle)
+        #expect(landedIn.last == .idle)
+        #expect(!SessionState.idle.isNotifiable, "so nothing sounds and the notch stays shut")
+        #expect(session.lastFinishedAt == nil, "it did not finish, so the row must not say it did")
+        #expect(session.finishedAgo(now: t + 3) == nil)
+        #expect(session.currentTool == nil)
+        #expect(session.activeCalls.isEmpty)
+        #expect(session.turnStartedAt == nil)
+    }
+
+    /// Esc while a permission prompt is up cancels the prompt. Left set, the row would ask for attention
+    /// that nothing was waiting for.
+    @Test("an interrupt releases attention")
+    func interruptReleasesNeedsYou() {
+        let store = SessionStore()
+        store.apply(codexEvent("UserPromptSubmit", at: t))
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Bash", "toolUseId": "e1"]))
+        store.apply(codexEvent("Notification", at: t + 2, [
+            "notificationType": "permission_prompt", "message": "Allow?",
+        ]))
+        #expect(store.session(key: key)?.state == .needsYou)
+
+        store.apply(codexEvent("Interrupt", at: t + 3))
+
+        #expect(store.session(key: key)?.state == .idle)
+        #expect(store.session(key: key)?.needsYouMessage == nil)
+    }
+
+    /// Compaction reports nothing for as long as it takes, which is exactly what a wedged session looks
+    /// like. The control below is the same session without the compaction event.
+    @Test("a compacting session is quiet without being stuck")
+    func compactingIsNotAStall() {
+        let clock = TestClock()
+        let store = SessionStore(now: clock.now)
+        var stalled: [String] = []
+        store.onStalled = { stalled.append($0.sessionID) }
+
+        store.apply(codexEvent("UserPromptSubmit", at: clock.current))
+        store.apply(codexEvent("PreToolUse", at: clock.current, ["toolName": "Bash", "toolUseId": "e1"]))
+        store.apply(codexEvent("PreCompact", at: clock.current, ["trigger": "auto"]))
+
+        clock.advance(SessionStore.stallThreshold + 60)
+        store.tick()
+
+        #expect(stalled.isEmpty)
+        #expect(store.session(key: key)?.isStalled == false)
+        #expect(store.session(key: key)?.activityLine(now: clock.current) == "compacting",
+                "and the row says why it has gone quiet")
+    }
+
+    @Test("the same silence without compaction is a stall")
+    func silenceWithoutCompactionStillStalls() {
+        let clock = TestClock()
+        let store = SessionStore(now: clock.now)
+        var stalled: [String] = []
+        store.onStalled = { stalled.append($0.sessionID) }
+
+        store.apply(codexEvent("UserPromptSubmit", at: clock.current))
+        store.apply(codexEvent("PreToolUse", at: clock.current, ["toolName": "Bash", "toolUseId": "e1"]))
+
+        clock.advance(SessionStore.stallThreshold + 60)
+        store.tick()
+
+        #expect(stalled == ["cx1"])
+    }
+
+    @Test("compaction finishing hands the row back to what is running")
+    func postCompactClearsTheLabel() {
+        let store = SessionStore()
+        store.apply(codexEvent("UserPromptSubmit", at: t))
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Bash", "toolUseId": "e1", "toolSummary": "npm test"]))
+        store.apply(codexEvent("PreCompact", at: t + 2))
+        store.apply(codexEvent("PostCompact", at: t + 3))
+
+        let session = try! #require(store.session(key: key))
+        #expect(!session.isCompacting)
+        #expect(session.activityLine(now: t + 4) == "Bash · npm test")
+    }
+
+    /// A child's context compacting is as quiet as the parent's, and the flag exists to stop quiet
+    /// reading as wedged. What it must not do is take over the row: `3/5 done` says more than
+    /// `compacting`, and the fan-out is what the person is waiting on.
+    @Test("a child compacting keeps its parent off the stall report without taking the row")
+    func childCompactionSuppressesTheStall() {
+        let clock = TestClock()
+        let store = SessionStore(now: clock.now)
+        var stalled: [String] = []
+        store.onStalled = { stalled.append($0.sessionID) }
+
+        store.apply(codexEvent("UserPromptSubmit", at: clock.current))
+        store.apply(codexEvent("SubagentStart", at: clock.current, ["agentId": "ag1"]))
+        store.apply(codexEvent("PreCompact", at: clock.current, ["agentId": "ag1"]))
+
+        clock.advance(SessionStore.stallThreshold + 60)
+        store.tick()
+
+        #expect(stalled.isEmpty)
+        #expect(store.session(key: key)?.activityLine(now: clock.current) == "1 agent",
+                "the fan-out still describes what is happening")
+
+        store.apply(codexEvent("PostCompact", at: clock.current, ["agentId": "ag1"]))
+        #expect(store.session(key: key)?.isCompacting == false)
+    }
+}
+
 /// Codex runs tools concurrently — two `PreToolUse` in the same second with different call ids, then two
 /// completions. Every rule here is one the singular "current tool" model gets wrong.
 @Suite("SessionStore — concurrent tool calls")

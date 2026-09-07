@@ -313,6 +313,31 @@ final class SessionStore {
                 session.lastProgressAt = event.date
                 session.isStalled = false
 
+            // Esc. The turn is over and it did not finish, so not `.done`: that plays the success cue
+            // and drops the notch open to announce a result which was never produced.
+            case "Interrupt":
+                newState = .idle
+                session.needsYouMessage = nil
+                session.currentTool = nil
+                session.currentToolSummary = nil
+                session.activeCalls.removeAll()
+                session.agents.removeAll()
+                session.turnStartedAt = nil
+                session.lastProgressAt = nil
+                session.isStalled = false
+                session.isCompacting = false
+
+            // Compaction reports nothing while it runs and can take a while, which every signal the
+            // widget has makes indistinguishable from wedged.
+            case "PreCompact":
+                session.isCompacting = true
+                session.isStalled = false
+                session.lastProgressAt = event.date
+
+            case "PostCompact":
+                session.isCompacting = false
+                session.lastProgressAt = event.date
+
             case "SessionEnd":
                 remove(key: key)
                 rebuild()
@@ -395,6 +420,18 @@ final class SessionStore {
                 session.currentToolWasBlocked = true
                 agent.markActiveCallsBlocked()
             }
+
+        // Compaction belongs to the session whoever's context is being compacted: the flag exists to
+        // stop a long quiet stretch reading as a stall, and a child's stretch is just as quiet. Consumed
+        // here rather than left to fall through so that a child's `agent_id` cannot be mistaken for the
+        // session's own; a child row has one line and it names a tool, so there is nothing to show on it.
+        case "PreCompact":
+            session.isCompacting = true
+            recordProgress()
+
+        case "PostCompact":
+            session.isCompacting = false
+            recordProgress()
 
         case "SubagentStop":
             agent.recordCurrentToolDuration(endingAt: event.date)

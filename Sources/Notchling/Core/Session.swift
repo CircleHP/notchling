@@ -105,6 +105,14 @@ struct Session: Identifiable, Equatable, ToolTracking {
     var currentPromptID: String?
     var isStalled = false
 
+    /// Set between something in this session saying it is compacting its context and saying it has
+    /// finished — the session's own thread or one of its agents.
+    ///
+    /// Whose context it is does not matter, because of the one thing the flag is for: compaction is a
+    /// long quiet stretch, and every signal the widget has makes it look exactly like a wedged session.
+    /// A child's silence is just as quiet as the parent's.
+    var isCompacting = false
+
     var focusURL: String?
     var warpSessionID: String?
     var termProgram: String?
@@ -191,7 +199,9 @@ struct Session: Identifiable, Equatable, ToolTracking {
     /// completion signal is `PostToolUse` and that is deliberately not registered. So callers should
     /// report the elapsed time rather than claim the session is stuck.
     func stalledFor(now: Date = .now) -> TimeInterval? {
-        guard state == .working, let lastProgressAt else { return nil }
+        // Compaction is quiet for as long as it takes, and is not a stall. Nothing else can tell the
+        // two apart, which is why the flag exists.
+        guard state == .working, !isCompacting, let lastProgressAt else { return nil }
         return now.timeIntervalSince(lastProgressAt)
     }
 
@@ -215,6 +225,9 @@ struct Session: Identifiable, Equatable, ToolTracking {
             // While agents are out, the main thread is orchestrating, not running the tool the row would
             // otherwise name. `Task · 3/5 done` describes what is happening; `Task` on its own does not.
             if let agentSummary { return agentSummary }
+            // Ahead of the tool name, which by now stopped reporting long enough ago to read as stuck,
+            // and behind the agent summary, which says more.
+            if isCompacting { return "compacting" }
             // Between a failed tool and whatever Claude tries next there is nothing else to say, and
             // saying nothing would hide the failure entirely.
             guard let currentTool else { return lastToolFailure }
