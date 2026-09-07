@@ -109,13 +109,39 @@ final class SessionStore {
     @discardableResult
     private func remove(key: SessionKey) -> Session? {
         guard let session = index.removeValue(forKey: key) else { return nil }
-        if let pid = session.pid {
-            resolvedPIDs.remove(pid)
-            processEnvironment.forget(pid: pid)
-        }
+        if let pid = session.pid { release(pid: pid) }
         transcripts.forget(key: key)
         onRemoved?(session)
         return session
+    }
+
+    /// Record which process a session belongs to, letting go of whatever pid it held before.
+    ///
+    /// A pid left behind in `resolvedPIDs` and the reader's cache after the session stopped using it
+    /// refuses a probe to whatever process macOS hands that number to next — the row appears and the
+    /// click quietly does nothing. `remove(key:)` only ever released the pid a session still held, so a
+    /// session whose pid *changed* stranded the old one.
+    private func adopt(pid: Int32, startedAt: Double?, on session: inout Session) {
+        if let held = session.pid, held != pid {
+            release(pid: held)
+            session.pidStartedAt = nil
+        }
+        session.pid = pid
+
+        // The reporter's answer wins where there is one: the hook read it as a child of the agent, so
+        // the pid was certainly that process then. Reading it here is the fallback for a pid that
+        // arrived without one — the registry reports no start time — and is only as good as how
+        // promptly the app got to the event.
+        if let startedAt {
+            session.pidStartedAt = startedAt
+        } else if session.pidStartedAt == nil {
+            session.pidStartedAt = ProcessLiveness.startTime(of: pid)
+        }
+    }
+
+    private func release(pid: Int32) {
+        resolvedPIDs.remove(pid)
+        processEnvironment.forget(pid: pid)
     }
 
     /// Current state of one session. The panel freezes which rows it draws when it opens but keeps
@@ -157,7 +183,7 @@ final class SessionStore {
         var session = index[key] ?? Session(sessionID: event.sessionId, provider: event.provider)
         let previous = session.state
 
-        if let pid = event.pid { session.pid = pid }
+        if let pid = event.pid { adopt(pid: pid, startedAt: event.pidStartedAt, on: &session) }
         if let cwd = event.cwd { session.cwd = cwd }
         // Terminal identity only ever arrives from the top-level session's own environment.
         if let url = event.focusURL { session.focusURL = url }
@@ -435,7 +461,7 @@ final class SessionStore {
             var session = index[key] ?? Session(sessionID: entry.sessionId, provider: .claude)
             let previous = session.state
 
-            session.pid = entry.pid
+            adopt(pid: entry.pid, startedAt: nil, on: &session)
             // A missing field means the registry did not report it, not that it was cleared.
             if let name = entry.name { session.name = name }
             if let cwd = entry.cwd { session.cwd = cwd }
@@ -504,7 +530,9 @@ final class SessionStore {
             // hook resolves it from `CLAUDE_PID` or a walk up the parent chain, and both come up
             // empty often enough. Reading that as death removed the grace period from the one case
             // it was written for — hook events arriving before the registry file exists.
-            if let pid = session.pid, !ProcessLiveness.isAlive(pid) {
+            if let pid = session.pid,
+               !ProcessLiveness.isSameProcess(pid: pid, startedAt: session.pidStartedAt)
+            {
                 remove(key: key)
                 continue
             }
@@ -561,6 +589,12 @@ final class SessionStore {
     private func resolveTerminalIdentity(for key: SessionKey, pid: Int32) {
         processEnvironment.read(pid: pid) { [weak self] identity in
             guard let self, var session = self.index[key] else { return }
+            // The probe answers about a number, and between asking and answering that number can come
+            // to mean another process. Storing the answer then would put a stranger's terminal on this
+            // session's row, and a click would go there.
+            guard session.pid == pid,
+                  ProcessLiveness.isSameProcess(pid: pid, startedAt: session.pidStartedAt)
+            else { return }
             if session.focusURL == nil { session.focusURL = identity.focusURL }
             if session.warpSessionID == nil { session.warpSessionID = identity.warpSessionID }
             if session.termProgram == nil { session.termProgram = identity.termProgram }
@@ -574,7 +608,8 @@ final class SessionStore {
 
     // MARK: - Periodic upkeep
 
-    /// Called on a slow timer. Deliberately does no I/O beyond `kill(pid, 0)` and a few small reads.
+    /// Called on a slow timer. Deliberately does no I/O beyond one `sysctl` per session and a few
+    /// small reads — both in-kernel, and neither growing with how busy a session is.
     func tick() {
         // Turned off means not read at all rather than read and hidden. Nobody is looking at the
         // result, and the scan still reports a usage file it cannot decode — a finding in the log
@@ -623,7 +658,11 @@ final class SessionStore {
                 index[key] = session
                 changed = true
             }
-            if let pid = session.pid, !ProcessLiveness.isAlive(pid) {
+            // Not merely alive: the same process. A recycled pid answers `kill(pid, 0)` and would keep
+            // a dead session on the panel for as long as something unrelated held the number.
+            if let pid = session.pid,
+               !ProcessLiveness.isSameProcess(pid: pid, startedAt: session.pidStartedAt)
+            {
                 remove(key: key)
                 changed = true
             }
@@ -683,5 +722,31 @@ enum ProcessLiveness {
         guard pid > 0 else { return false }
         if kill(pid, 0) == 0 { return true }
         return errno == EPERM
+    }
+
+    /// When the process behind a pid started, as epoch seconds, or nil when there is no such process.
+    static func startTime(of pid: Int32) -> Double? {
+        guard pid > 0 else { return nil }
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        let started = info.kp_proc.p_starttime
+        guard started.tv_sec > 0 else { return nil }
+        return Double(started.tv_sec) + Double(started.tv_usec) / 1_000_000
+    }
+
+    /// Whether `pid` still means the process that was seen starting at `startedAt`.
+    ///
+    /// Compared to the second rather than exactly: the value travels through JSON, and two processes
+    /// cannot plausibly share a pid inside one second — the kernel has to work through the whole pid
+    /// space before handing that number out again.
+    ///
+    /// A nil `startedAt` is not a mismatch. It means nothing was recorded to compare against, so this
+    /// can only answer liveness, which is all the app could do before start times were carried at all.
+    static func isSameProcess(pid: Int32, startedAt: Double?) -> Bool {
+        guard let current = startTime(of: pid) else { return false }
+        guard let startedAt else { return true }
+        return abs(current - startedAt) < 1
     }
 }

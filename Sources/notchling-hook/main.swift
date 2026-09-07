@@ -115,6 +115,19 @@ func parentPID(of pid: Int32) -> Int32? {
     sysctlProcInfo(pid)?.kp_eproc.e_ppid
 }
 
+/// When the process behind a pid started, as epoch seconds.
+///
+/// Sent alongside the pid because a pid on its own is not an identity: macOS reuses them, and by the
+/// time the app drains this event — which can be minutes, if it was not running — the number may
+/// belong to something else entirely. Read here rather than there because here it cannot be wrong:
+/// this binary is a child of the agent, so the pid is certainly that process at this moment.
+func startTime(of pid: Int32) -> Double? {
+    guard let info = sysctlProcInfo(pid) else { return nil }
+    let started = info.kp_proc.p_starttime
+    guard started.tv_sec > 0 else { return nil }
+    return Double(started.tv_sec) + Double(started.tv_usec) / 1_000_000
+}
+
 func processName(of pid: Int32) -> String? {
     guard var info = sysctlProcInfo(pid) else { return nil }
     // No force unwrap: this binary runs on `PreToolUse`, in the hot path of every tool call in every
@@ -170,7 +183,9 @@ put("reason", string("reason"))
 // wrong key fails silently: the row shows `failed` and never says why.
 put("errorMessage", truncated(string("error") ?? string("error_message"), to: maxMessageLength))
 
-put("pid", resolveClaudePID().map { Int($0) })
+let agentPID = resolveClaudePID()
+put("pid", agentPID.map { Int($0) })
+put("pidStartedAt", agentPID.flatMap(startTime(of:)))
 put("focusURL", environment["WARP_FOCUS_URL"])
 put("warpSessionId", environment["WARP_TERMINAL_SESSION_UUID"])
 put("termProgram", environment["TERM_PROGRAM"])

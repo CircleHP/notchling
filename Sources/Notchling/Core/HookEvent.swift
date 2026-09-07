@@ -16,6 +16,8 @@ struct HookEvent: Decodable {
     var sessionId: String
 
     var pid: Int32?
+    /// When the process behind `pid` started. See `startTime(of:)` in `notchling-hook`.
+    var pidStartedAt: Double?
     var cwd: String?
     var promptId: String?
     var agentId: String?

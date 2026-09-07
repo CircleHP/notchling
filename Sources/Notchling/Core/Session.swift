@@ -47,6 +47,13 @@ struct Session: Identifiable, Equatable, ToolTracking {
     var id: SessionKey { key }
 
     var pid: Int32?
+    /// When the process behind `pid` started, as epoch seconds, when it is known.
+    ///
+    /// A pid alone is not an identity: macOS reuses them, and `kill(pid, 0)` cannot tell the process
+    /// that was there from the one holding the number now. Nil means unrecorded, which is read as "no
+    /// second opinion" rather than as a mismatch — a hook from an older install sends no start time,
+    /// and treating that as a stale pid would take terminal identity from every session it feeds.
+    var pidStartedAt: Double?
     var name: String?
     var cwd: String?
     var kind: SessionKind = .interactive

@@ -230,6 +230,59 @@ struct SessionStoreHookTests {
         #expect(store.resolvedPIDs == [4242])
     }
 
+    /// The hazard #9 closed from one direction and this closes from the other: a pid alone cannot say
+    /// whether the process behind it is still the session's. A recycled number answers `kill(pid, 0)`,
+    /// so a dead session held its row — and its terminal identity — for as long as anything at all held
+    /// that number.
+    @Test("a session whose pid now belongs to another process is gone")
+    func recycledPIDIsNotTheSameSession() {
+        let store = SessionStore()
+        // A pid that is certainly alive, paired with a start time that is certainly not its own.
+        store.apply(hookEvent("UserPromptSubmit", session: "stale", [
+            "pid": Int(livePID), "pidStartedAt": 1.0,
+        ]))
+        #expect(store.sessions.count == 1, "nothing has looked at the process yet")
+
+        store.tick()
+        #expect(store.sessions.isEmpty, "alive is not the same as still ours")
+    }
+
+    @Test("a session whose pid is still its own stays")
+    func matchingPIDSurvives() {
+        let store = SessionStore()
+        let started = ProcessLiveness.startTime(of: livePID)
+        store.apply(hookEvent("UserPromptSubmit", session: "live", [
+            "pid": Int(livePID), "pidStartedAt": started as Any,
+        ]))
+
+        store.tick()
+        #expect(store.sessions.count == 1)
+    }
+
+    /// A hook from an older install sends no start time. Reading that as a mismatch would delete every
+    /// session it feeds, so an unrecorded start time has to mean "no second opinion".
+    @Test("an unrecorded start time falls back to plain liveness")
+    func absentStartTimeIsNotAMismatch() {
+        let store = SessionStore()
+        store.apply(hookEvent("UserPromptSubmit", session: "old", ["pid": Int(livePID)]))
+
+        store.tick()
+        #expect(store.sessions.count == 1, "a live process and nothing to contradict it")
+    }
+
+    /// `remove(key:)` only ever released the pid a session still held, so a session whose pid changed
+    /// stranded the old number — and a stranded number refuses a probe to whatever gets it next.
+    @Test("a session changing pid releases the one it held")
+    func changingPIDReleasesTheOldOne() {
+        let store = SessionStore()
+        store.apply(hookEvent("SessionStart", session: "s1", ["pid": 4242]))
+        #expect(store.resolvedPIDs.contains(4242))
+
+        store.apply(registry: [registryEntry(session: "s1", pid: 5555)])
+        #expect(!store.resolvedPIDs.contains(4242), "the pid it no longer holds must not be kept")
+        #expect(store.resolvedPIDs.contains(5555))
+    }
+
     @Test("terminal identity is carried across from the hook environment")
     func terminalIdentity() {
         let store = SessionStore()

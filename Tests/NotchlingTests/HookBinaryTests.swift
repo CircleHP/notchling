@@ -259,6 +259,12 @@ struct HookBinaryTests {
         #expect(event["termProgram"] as? String == "WarpTerminal")
         #expect(event["hostBundleId"] as? String == "dev.warp.Warp-Stable")
         #expect(event["pid"] as? Int == Int(livePID), "CLAUDE_PID identifies the owning session")
+
+        // The pid is only half an identity. Without the start time beside it, the app cannot tell this
+        // process from whatever holds its number by the time the event is drained.
+        let started = try #require(event["pidStartedAt"] as? Double)
+        let live = try #require(ProcessLiveness.startTime(of: livePID))
+        #expect(abs(started - live) < 0.001, "the start time is the one the kernel reports")
     }
 
     @Test("filenames are millisecond-prefixed so a plain sort is chronological")
