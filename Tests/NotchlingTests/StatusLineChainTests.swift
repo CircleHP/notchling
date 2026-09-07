@@ -469,7 +469,9 @@ struct StatusLineChainTests {
         let run = try installer(["status", "--json"], home: home, ownPath: true)
         #expect(run.status == 0)
         let data = try #require(run.output.data(using: .utf8))
-        return try #require(try JSONSerialization.jsonObject(with: data) as? [String: String])
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        // The flat answers only. Each agent's own object is read by the suite that is about it.
+        return object.compactMapValues { $0 as? String }
     }
 
     @Test("status reports an unwired machine as unwired")
@@ -648,6 +650,9 @@ struct CodexWiringTests {
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home.path
         environment.removeValue(forKey: "CODEX_HOME")
+        // Ahead of the real machine's, so `resolve_hook` finds this scratch home's hook rather than
+        // the one installed here — otherwise everything reads as wired somewhere else.
+        environment["PATH"] = "\(home.appendingPathComponent("bin").path):\(environment["PATH"] ?? "")"
         process.environment = environment
 
         let pipe = Pipe()
@@ -869,6 +874,81 @@ struct CodexWiringTests {
             #expect(entry["command"] as? String == hook.path, "no provider argument")
             #expect(entry["timeout"] == nil, "Claude Code's entries are as they always were")
             #expect(hooks["PostToolUse"] == nil, "still refused: its payload carries the tool's output")
+        }
+    }
+
+    private func status(_ home: URL) throws -> [String: Any] {
+        let run = try installer(["status", "--json"], home: home)
+        let data = try #require(run.output.data(using: .utf8))
+        return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    /// The settings window decodes this, and an older build of it has to keep working against a newer
+    /// script — so the Codex answer is added beside the existing ones, never folded into them.
+    @Test("status answers for Codex without disturbing the answers it already gave")
+    func statusGainsCodexWithoutBreakingTheRest() throws {
+        try withHome { home, hook in
+            let claude = home.appendingPathComponent(".claude")
+            try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+            try "{}".write(to: claude.appendingPathComponent("settings.json"), atomically: true, encoding: .utf8)
+
+            let before = try status(home)
+            for field in [
+                "hooks", "hookCommand", "hookResolved",
+                "statusLine", "statusLineCommand", "wrapped", "statusLineResolved",
+            ] {
+                #expect(before[field] != nil, "\(field) is read by the settings window")
+            }
+
+            let codexBefore = try #require(before["codex"] as? [String: Any])
+            #expect(codexBefore["hooks"] as? String == "none")
+            #expect(codexBefore["available"] as? Bool == true, "the scratch home has a .codex")
+            #expect((codexBefore["home"] as? String)?.hasSuffix(".codex/hooks.json") == true)
+
+            try installer(["install", hook.path, "--provider", "codex"], home: home)
+
+            let after = try status(home)
+            let codexAfter = try #require(after["codex"] as? [String: Any])
+            #expect(codexAfter["hooks"] as? String == "wired")
+            #expect(codexAfter["hookCommand"] as? String == "\(hook.path) --provider codex")
+            #expect(after["hooks"] as? String == "none", "wiring Codex wires nothing for Claude")
+        }
+    }
+
+    /// Codex will not run a hook whose definition has not been reviewed, and the record of that is a
+    /// hash keyed by the hook's position in the file — a hash at a position being no proof it matches
+    /// what is there now. So the honest answer is that this does not know.
+    @Test("trust is reported as unknown rather than guessed")
+    func trustIsNotGuessed() throws {
+        try withHome { home, hook in
+            try installer(["install", hook.path, "--provider", "codex"], home: home)
+            let codex = try #require(try status(home)["codex"] as? [String: Any])
+            #expect(codex["trust"] as? String == "unknown")
+        }
+    }
+
+    /// The case a dev build creates, and the one `setup` offers to re-point: wired to a copy of the
+    /// hook that is not the one this script would find now.
+    @Test("a hook wired from somewhere else is reported as such")
+    func staleWiringIsReported() throws {
+        try withHome { home, hook in
+            let moved = home.appendingPathComponent("bin/notchling-hook-moved")
+            try FileManager.default.copyItem(at: hook, to: moved)
+
+            try installer(["install", moved.path, "--provider", "codex"], home: home)
+            let codex = try #require(try status(home)["codex"] as? [String: Any])
+            #expect(codex["hooks"] as? String == "elsewhere")
+            #expect(codex["hookCommand"] as? String == "\(moved.path) --provider codex")
+        }
+    }
+
+    @Test("status says in words what it is reporting")
+    func statusReadsAsProse() throws {
+        try withHome { home, hook in
+            try installer(["install", hook.path, "--provider", "codex"], home: home)
+            let run = try installer(["status"], home: home)
+            #expect(run.output.contains("codex hooks"))
+            #expect(run.output.contains("/hooks"), "and what is still needed to arm them")
         }
     }
 

@@ -247,6 +247,29 @@ wired_command() {
   printf '%s\n' "$found"
 }
 
+# Where Codex keeps its hooks, wherever its home has been moved to.
+codex_hooks_file() { printf '%s\n' "${CODEX_HOME:-$HOME/.codex}/hooks.json"; }
+
+# Whether this machine has Codex at all, which is the only question worth asking before offering to
+# wire it. Neither signal is proof: an uninstall leaves the directory behind, and the binary being on
+# `PATH` says nothing about whether anyone uses it. Either is reason enough to ask, and the answer is
+# never reported as certainty.
+codex_present() {
+  command -v codex >/dev/null 2>&1 && return 0
+  [ -d "${CODEX_HOME:-$HOME/.codex}" ]
+}
+
+# Our command in Codex's file, if one is there. Matched on the binary's name rather than the whole
+# string, because the command carries an argument and the path it names may have moved.
+codex_wired_command() {
+  file=$(codex_hooks_file)
+  [ -f "$file" ] || return 1
+  found=$(jq -r '[.hooks // {} | to_entries[] | .value[]?.hooks[]?.command]
+                 | map(select(test("notchling-hook"))) | first // ""' "$file" 2>/dev/null)
+  [ -n "$found" ] || return 1
+  printf '%s\n' "$found"
+}
+
 # --- The status line slot --------------------------------------------------------------------
 #
 # Claude Code has one, and the plan limits reach it and nothing else — no hook payload carries them.
@@ -385,7 +408,9 @@ if [ "$MODE" = "setup" ]; then
   # Nothing here may block waiting for an answer that cannot arrive.
   if [ ! -t 0 ]; then
     printf 'install-hooks: setup needs a terminal. Run these instead:\n'
-    printf '  notchling-hooks install\n  notchling-hooks statusline   # optional\n'
+    printf '  notchling-hooks install\n'
+    codex_present && printf '  notchling-hooks install --provider codex\n'
+    printf '  notchling-hooks statusline   # optional\n'
     exit 0
   fi
 
@@ -416,6 +441,36 @@ if [ "$MODE" = "setup" ]; then
     printf '%s, backing it up first and leaving other tools alone.\n\n' "$SETTINGS"
     if confirm "Wire them?" y; then
       "$0" install "$hook"
+    fi
+  fi
+
+  # 1b. Codex. Only where there is a Codex to wire: an agent this machine does not have is not a
+  # question worth putting to anybody.
+  CODEX_WIRED_IN_SETUP=""
+  if codex_present; then
+    printf '\n'
+    if existing=$(codex_wired_command); then
+      if [ "$existing" = "$hook --provider codex" ]; then
+        printf '  codex       already wired to %s\n' "$existing"
+        CODEX_WIRED_IN_SETUP=1
+      else
+        printf '  codex       wired to %s, which is not the copy just installed\n' "$existing"
+        if confirm "Re-point them at $hook?" y; then
+          # The written command carries the argument; the installer appends it, so it is handed the
+          # binary rather than the string that was found.
+          "$0" uninstall "${existing% --provider codex}" --provider codex >/dev/null
+          "$0" install "$hook" --provider codex
+          CODEX_WIRED_IN_SETUP=1
+        fi
+      fi
+    else
+      printf 'Codex keeps its hooks in %s. Wiring them appends to it, backs it up\n' "$(codex_hooks_file)"
+      printf 'first, and leaves other tools alone. Codex will then ask you to review them before it\n'
+      printf 'runs any of them.\n\n'
+      if confirm "Wire Codex sessions too?" y; then
+        "$0" install "$hook" --provider codex
+        CODEX_WIRED_IN_SETUP=1
+      fi
     fi
   fi
 
@@ -460,7 +515,10 @@ if [ "$MODE" = "setup" ]; then
       ;;
   esac
 
-  printf '\nRestart any Claude sessions that were already running — hooks are read at session start.\n'
+  printf '\nRestart any sessions that were already running — hooks are read at session start.\n'
+  if [ -n "$CODEX_WIRED_IN_SETUP" ]; then
+    printf 'For Codex, run /hooks in a session first to review and trust what was just wired.\n'
+  fi
   exit 0
 fi
 
@@ -488,6 +546,21 @@ if [ "$MODE" = "status" ]; then
     hooks=elsewhere
   fi
 
+  # Added beside the existing answers rather than folded into them: the settings window decodes this
+  # object, and an older build of it has to keep working against a newer script.
+  codex_available=false
+  codex_present && codex_available=true
+  codex_wired=$(codex_wired_command || printf '')
+  codex_expected=""
+  [ -z "$hook" ] || codex_expected="$hook --provider codex"
+  if [ -z "$codex_wired" ]; then
+    codex_hooks=none
+  elif [ "$codex_wired" = "$codex_expected" ]; then
+    codex_hooks=wired
+  else
+    codex_hooks=elsewhere
+  fi
+
   line=$(classify_statusline)
   current=$(statusline_command)
   [ "$line" != "chain" ] || adopt_chain_paths "$current"
@@ -496,14 +569,25 @@ if [ "$MODE" = "status" ]; then
   script=$(resolve_statusline 2>/dev/null || printf '')
 
   if [ -n "$JSON" ]; then
+    # `trust` is reported as unknown rather than guessed. Codex records the decision as a hash in its
+    # own config, keyed by a hook's position in the file, and a hash sitting at a position is not
+    # proof it matches the definition there now. The effective answer comes from `hooks/list` on the
+    # app server, which nothing here starts.
     jq -n \
       --arg hooks "$hooks" --arg hookCommand "$wired" --arg hookResolved "$hook" \
       --arg statusLine "$line" --arg statusLineCommand "$current" \
       --arg wrapped "$wrapped" --arg statusLineResolved "$script" \
+      --argjson codexAvailable "$codex_available" \
+      --arg codexHome "$(codex_hooks_file)" \
+      --arg codexHooks "$codex_hooks" --arg codexHookCommand "$codex_wired" \
       '{
         hooks: $hooks, hookCommand: $hookCommand, hookResolved: $hookResolved,
         statusLine: $statusLine, statusLineCommand: $statusLineCommand,
-        wrapped: $wrapped, statusLineResolved: $statusLineResolved
+        wrapped: $wrapped, statusLineResolved: $statusLineResolved,
+        codex: {
+          available: $codexAvailable, home: $codexHome,
+          hooks: $codexHooks, hookCommand: $codexHookCommand, trust: "unknown"
+        }
       }'
     exit 0
   fi
@@ -514,6 +598,14 @@ if [ "$MODE" = "status" ]; then
     plugin)    printf 'hooks         provided by the Notchling plugin\n' ;;
     *)         printf 'hooks         not wired\n' ;;
   esac
+  # Silent on a machine with no Codex, so nothing here changes for someone who only runs Claude Code.
+  if [ "$codex_available" = true ] || [ -n "$codex_wired" ]; then
+    case "$codex_hooks" in
+      wired)     printf 'codex hooks   wired to %s — trust them with /hooks inside Codex\n' "$codex_wired" ;;
+      elsewhere) printf 'codex hooks   wired to %s, which is not the copy found now\n' "$codex_wired" ;;
+      *)         printf 'codex hooks   not wired\n' ;;
+    esac
+  fi
   case "$line" in
     ours)    printf 'status line   %s\n' "$current" ;;
     chain)   printf 'status line   Notchling, in front of: %s\n' "$wrapped" ;;
