@@ -283,6 +283,7 @@ final class SessionStore {
         index[key] = session
         rebuild()
         notifyTransition(from: previous, session: session)
+        probeTerminalIdentity(for: key)
         readTranscriptMarks(for: key)
     }
 
@@ -487,16 +488,7 @@ final class SessionStore {
 
             index[key] = session
 
-            // Not just for registry-discovered sessions: a hook event from a terminal that publishes
-            // no focus URL leaves us with no tty either, and the tty is what the iTerm/Terminal
-            // fallbacks match on.
-            if session.processCommand == nil, let pid = session.pid,
-               !resolvedPIDs.contains(pid)
-            {
-                resolvedPIDs.insert(pid)
-                resolveTerminalIdentity(for: key, pid: pid)
-            }
-
+            probeTerminalIdentity(for: key)
             readTranscriptMarks(for: key)
 
             notifyTransition(from: previous, session: session)
@@ -546,6 +538,24 @@ final class SessionStore {
             self.index[key] = session
             self.rebuild()
         }
+    }
+
+    /// Ask the process behind a session which terminal it belongs to, at most once per pid.
+    ///
+    /// Driven by the session having a pid rather than by the registry reporting one. A hook event from
+    /// a terminal that publishes no focus URL leaves us with no tty either, and the tty is what the
+    /// iTerm2 and Terminal.app focus paths match on — so a provider with no registry at all still has
+    /// to reach this, or a click on its row can never do better than activating an app.
+    ///
+    /// Call it only after the session has been written to `index`: a pid already in the reader's cache
+    /// completes synchronously, and the answer has nowhere to land until the session is there.
+    private func probeTerminalIdentity(for key: SessionKey) {
+        guard let session = index[key], session.processCommand == nil,
+              let pid = session.pid, !resolvedPIDs.contains(pid)
+        else { return }
+
+        resolvedPIDs.insert(pid)
+        resolveTerminalIdentity(for: key, pid: pid)
     }
 
     private func resolveTerminalIdentity(for key: SessionKey, pid: Int32) {

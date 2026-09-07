@@ -175,8 +175,7 @@ struct SessionStoreHookTests {
         #expect(store.resolvedPIDs.contains(4242), "the next owner of the pid gets its own probe")
     }
 
-    /// The pid is claimed on the registry path — that is where the identity probe lives — but a session
-    /// can leave by either route, so `SessionEnd` has to release it too.
+    /// A session can leave by either route, so `SessionEnd` has to release its pid too.
     @Test("SessionEnd also releases the pid")
     func sessionEndPurgesThePID() {
         let store = SessionStore()
@@ -204,6 +203,31 @@ struct SessionStoreHookTests {
         #expect(store.sessions.count == 1)
         store.apply(hookEvent("SessionEnd"))
         #expect(store.sessions.isEmpty)
+    }
+
+    /// The tty is not in any hook payload — it comes only from probing the process — and the iTerm2 and
+    /// Terminal.app focus paths match on it. While the probe was scheduled from the registry sweep, a
+    /// session the registry never lists could not obtain one, so a click on its row could never do better
+    /// than activating an app.
+    @Test("a session known only from hook events still claims its pid for a probe")
+    func hookOnlySessionIsProbed() {
+        let store = SessionStore()
+        store.apply(hookEvent("SessionStart", session: "hooked", ["pid": 4242]))
+
+        #expect(store.session(key: SessionKey(provider: .claude, id: "hooked")) != nil)
+        #expect(store.resolvedPIDs.contains(4242), "no registry entry, and still a probe")
+    }
+
+    /// One probe per pid whichever route reported it, or every hook event of a busy session would spawn
+    /// another `ps`.
+    @Test("the two routes do not each probe the same pid")
+    func probeHappensOnce() {
+        let store = SessionStore()
+        store.apply(hookEvent("SessionStart", session: "s1", ["pid": 4242]))
+        store.apply(registry: [registryEntry(session: "s1", pid: 4242)])
+        store.apply(hookEvent("PreToolUse", session: "s1", ["pid": 4242, "toolName": "Read"]))
+
+        #expect(store.resolvedPIDs == [4242])
     }
 
     @Test("terminal identity is carried across from the hook environment")
