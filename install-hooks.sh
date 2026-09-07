@@ -1,14 +1,17 @@
 #!/bin/bash
 #
-# Wire (or unwire) the Claude Code hooks that feed Notchling.
+# Wire (or unwire) the agent hooks that feed Notchling.
 #
 # Additive and idempotent, deliberately: other tools register hooks on the same events, and replacing
-# an event's array instead of appending to it would silently break them.
+# an event's array instead of appending to it would silently break them. Entries are always *appended*,
+# which matters more under Codex than under Claude Code: Codex keys a hook's trust decision by its
+# position in the file (`hooks.json:<event>:<group>:<hook>`), so inserting anywhere but the end
+# renumbers other tools' groups and silently invalidates the hashes they were trusted under.
 #
 # Usage, with the path optional in every mode — see "Path resolution" below:
 #   ./install-hooks.sh setup                                  interactive; asks about all of the below
-#   ./install-hooks.sh install       [/path/to/notchling-hook]
-#   ./install-hooks.sh uninstall     [/path/to/notchling-hook]
+#   ./install-hooks.sh install       [/path/to/notchling-hook] [--provider claude|codex]
+#   ./install-hooks.sh uninstall     [/path/to/notchling-hook] [--provider claude|codex]
 #   ./install-hooks.sh statusline    [/path/to/statusline-usage.sh] [--chain|--force]
 #   ./install-hooks.sh no-statusline
 #   ./install-hooks.sh status        [--json]
@@ -20,6 +23,7 @@ HOOK_COMMAND=""
 CHAIN_REQUESTED=""
 FORCE=""
 JSON=""
+PROVIDER="claude"
 SETTINGS="$HOME/.claude/settings.json"
 
 usage() {
@@ -29,6 +33,10 @@ notchling-hooks — wire the Claude Code hooks that feed the Notchling widget
   setup                       ask about hooks, the status line and starting at login
   install       [PATH]        wire the hooks, appending to any already configured
   uninstall     [PATH]        remove only the entries this installed
+
+Both take --provider claude (the default) or --provider codex. Codex keeps its hooks
+in $CODEX_HOME/hooks.json, and will not run a newly wired hook until it has been
+reviewed and trusted with /hooks inside Codex.
   statusline    [PATH]        add the plan-usage status line
   no-statusline               remove it again, if this installed it
   status        [--json]      what is wired right now, changing nothing
@@ -67,30 +75,90 @@ die() { printf 'install-hooks: %s\n' "$1" >&2; exit 1; }
 
 command -v jq >/dev/null 2>&1 || die "jq is required"
 
-# Everything after the mode, in any order: one path, and the flags the status line modes read.
+# Everything after the mode, in any order: one path, and the flags the modes below read.
 if [ $# -gt 0 ]; then shift; fi
-for arg in "$@"; do
-  case "$arg" in
+while [ $# -gt 0 ]; do
+  case "$1" in
     --chain) CHAIN_REQUESTED=1 ;;
     --force) FORCE=1 ;;
     --json)  JSON=1 ;;
-    -*)      die "unknown option: $arg" ;;
+    --provider)
+      [ $# -ge 2 ] || die "--provider needs a value: claude or codex"
+      PROVIDER=$2
+      shift
+      ;;
+    --provider=*) PROVIDER=${1#--provider=} ;;
+    -*)      die "unknown option: $1" ;;
     *)
-      [ -z "$HOOK_COMMAND" ] || die "unexpected argument: $arg"
-      HOOK_COMMAND=$arg
+      [ -z "$HOOK_COMMAND" ] || die "unexpected argument: $1"
+      HOOK_COMMAND=$1
       ;;
   esac
+  shift
 done
 
 # Swallowing them elsewhere would make `install --force` look like it did something it did not.
 if [ "$MODE" != "statusline" ] && [ -n "$CHAIN_REQUESTED$FORCE" ]; then
   die "--chain and --force apply to \`statusline\` only"
 fi
+case "$PROVIDER" in
+  claude|codex) ;;
+  *) die "unknown provider: $PROVIDER (expected claude or codex)" ;;
+esac
+
+# Claude Code's status line is Claude Code's: no other agent has the slot, and nothing else carries the
+# plan limits that reach it.
+if [ "$PROVIDER" != "claude" ] && case "$MODE" in statusline|no-statusline) true ;; *) false ;; esac; then
+  die "the status line is Claude Code's; --provider does not apply to \`$MODE\`"
+fi
+
 if [ "$MODE" != "status" ] && [ -n "$JSON" ]; then
   die "--json applies to \`status\` only"
 fi
 if [ -n "$CHAIN_REQUESTED" ] && [ -n "$FORCE" ]; then
   die "--chain keeps the status line that is there and --force replaces it; pick one"
+fi
+
+# --- What each agent's wiring looks like ------------------------------------------------------
+#
+# Both files hold the same shape — `{"<Event>": [{"hooks": [{"type": "command", "command": …}]}]}` —
+# so the two paths differ by a target, an event list, and a timeout.
+
+HOOK_TIMEOUT=""
+HOOK_ARGUMENTS=""
+
+if [ "$PROVIDER" = "codex" ]; then
+  # `CODEX_HOME` relocates the whole directory. Read here rather than assumed, because a GUI launched
+  # at login does not inherit a terminal's environment and would look somewhere else entirely.
+  SETTINGS="${CODEX_HOME:-$HOME/.codex}/hooks.json"
+
+  # Every event the widget consumes. `PostToolUse` is here and deliberately absent from Claude's list:
+  # under Codex it is the only signal that a tool finished, and so the only thing that can release a
+  # permission prompt — approving one produces no event of its own.
+  EVENTS=(
+    SessionStart
+    UserPromptSubmit
+    PreToolUse
+    PostToolUse
+    PermissionRequest
+    SubagentStart
+    SubagentStop
+    Stop
+    Interrupt
+    PreCompact
+    PostCompact
+    SessionEnd
+  )
+
+  # Stated rather than left out, and it has to be low. Codex caps `SessionEnd` and `Interrupt` at
+  # three seconds and prints a warning on every session start if a hook asks for more — while every
+  # other event defaults to *six hundred*, which would let a wedged hook hold a tool call for ten
+  # minutes. The hook reads stdin, writes one file and exits.
+  HOOK_TIMEOUT=2
+
+  # Nothing in a payload tells the agents apart: Codex names every event they share exactly as Claude
+  # Code does, PascalCase and all, and its field names match too. So the hook is told.
+  HOOK_ARGUMENTS=" --provider codex"
 fi
 
 # --- Path resolution -------------------------------------------------------------------------
@@ -641,6 +709,10 @@ if [ "$MODE" = "install" ] && [ ! -x "$HOOK_COMMAND" ]; then
   die "hook binary is not executable: $HOOK_COMMAND"
 fi
 
+# Appended after the check, which is about the binary, and before the writes, which are about the
+# command. `uninstall` needs the same string to match what `install` wrote.
+HOOK_COMMAND="$HOOK_COMMAND$HOOK_ARGUMENTS"
+
 mkdir -p "$(dirname "$SETTINGS")"
 [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
 
@@ -659,7 +731,10 @@ if [ "$MODE" = "install" ]; then
         .hooks[$event] //= []
         | if any(.hooks[$event][]?; any(.hooks[]?; .command == $cmd))
           then .
-          else .hooks[$event] += [{"hooks": [{"type": "command", "command": $cmd}]}]
+          else .hooks[$event] += [{"hooks": [
+                 {"type": "command", "command": $cmd}
+                 + (if $timeout == null then {} else {"timeout": $timeout} end)
+               ]}]
           end
       )
   '
@@ -686,7 +761,8 @@ fi
 TMP=$(mktemp "$SETTINGS.notchling.XXXXXX")
 trap 'rm -f "$TMP"' EXIT
 
-jq --arg cmd "$HOOK_COMMAND" --argjson events "$EVENTS_JSON" "$PROGRAM" "$SETTINGS" > "$TMP"
+jq --arg cmd "$HOOK_COMMAND" --argjson events "$EVENTS_JSON" \
+   --argjson timeout "${HOOK_TIMEOUT:-null}" "$PROGRAM" "$SETTINGS" > "$TMP"
 
 # Sanity-check the result before it replaces a file that controls how every session behaves.
 jq empty "$TMP" 2>/dev/null || die "produced invalid JSON — left $SETTINGS untouched (backup: $BACKUP)"
@@ -704,4 +780,16 @@ trap - EXIT
 
 printf 'install-hooks: %sed %d events in %s\n' "$MODE" "${#EVENTS[@]}" "$SETTINGS"
 printf 'install-hooks: backup at %s\n' "$BACKUP"
-printf 'install-hooks: restart any running Claude sessions to pick up the change\n'
+
+if [ "$PROVIDER" = "codex" ]; then
+  # Writing the file is not enough and cannot be: Codex will not run a hook until its definition has
+  # been reviewed, and the record of that decision is a hash it keeps itself. Writing one here would
+  # be forging the answer to a question meant for the person, so it is asked for instead.
+  if [ "$MODE" = "install" ]; then
+    printf 'install-hooks: run /hooks inside Codex to review and trust these, then start a session\n'
+  else
+    printf 'install-hooks: start a new Codex session to pick up the change\n'
+  fi
+else
+  printf 'install-hooks: restart any running Claude sessions to pick up the change\n'
+fi

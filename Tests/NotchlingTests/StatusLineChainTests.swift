@@ -626,3 +626,258 @@ struct StatusLineChainTests {
         }
     }
 }
+
+/// Codex keeps its hooks in a file of the same shape as Claude Code's, and keys each hook's trust
+/// decision by its position in that file. So the case that matters here is not the empty one: it is a
+/// file that already belongs to other tools, which must come out of this exactly as it went in.
+@Suite(
+    "install-hooks.sh — wiring Codex",
+    .enabled(if: scripts != nil, "install-hooks.sh or jq is not available")
+)
+struct CodexWiringTests {
+    private struct Run {
+        let status: Int32
+        let output: String
+    }
+
+    @discardableResult
+    private func installer(_ arguments: [String], home: URL) throws -> Run {
+        let process = Process()
+        process.executableURL = try #require(scripts?.installer)
+        process.arguments = arguments
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOME"] = home.path
+        environment.removeValue(forKey: "CODEX_HOME")
+        process.environment = environment
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        process.standardInput = FileHandle.nullDevice
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return Run(status: process.terminationStatus, output: String(data: data, encoding: .utf8) ?? "")
+    }
+
+    /// A machine that already has hooks of its own. Two groups on one event, the second with a matcher
+    /// and a timeout of its own, because that is what a real `hooks.json` looks like.
+    private static var occupied: [String: Any] { [
+        "hooks": [
+            "PreToolUse": [
+                ["hooks": [["type": "command", "command": "/other/tool.sh"]]],
+                [
+                    "matcher": "^Bash$",
+                    "hooks": [[
+                        "type": "command",
+                        "command": "/usr/bin/python3 /x/git.py",
+                        "timeout": 90,
+                        "statusMessage": "Checking",
+                    ]],
+                ],
+            ],
+            "Stop": [["hooks": [["type": "command", "command": "/other/tool.sh"]]]],
+        ],
+    ] }
+
+    private func withHome(
+        hooks: [String: Any]? = nil,
+        _ body: (URL, URL) throws -> Void
+    ) throws {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("notchling-codex-\(UUID().uuidString)")
+        let codex = home.appendingPathComponent(".codex")
+        let bin = home.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: codex, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let hook = bin.appendingPathComponent("notchling-hook")
+        try "#!/bin/sh\nexit 0\n".write(to: hook, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
+
+        if let hooks {
+            try JSONSerialization.data(withJSONObject: hooks)
+                .write(to: codex.appendingPathComponent("hooks.json"))
+        }
+
+        try body(home, hook)
+    }
+
+    private func hooksFile(_ home: URL) throws -> [String: Any] {
+        let data = try Data(contentsOf: home.appendingPathComponent(".codex/hooks.json"))
+        return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    private func groups(_ home: URL, _ event: String) throws -> [[String: Any]] {
+        let hooks = try #require(try hooksFile(home)["hooks"] as? [String: Any])
+        return (hooks[event] as? [[String: Any]]) ?? []
+    }
+
+    private func command(_ group: [String: Any]) -> String? {
+        ((group["hooks"] as? [[String: Any]])?.first)?["command"] as? String
+    }
+
+    /// Codex records trust as `hooks.json:<event>:<group>:<hook>`, so an entry inserted anywhere but
+    /// the end renumbers the groups after it — and every hook that moves stops matching the hash it
+    /// was trusted under, which Codex reports as a definition that has changed.
+    @Test("our entry goes last, leaving every other tool's position alone")
+    func appendsWithoutRenumbering() throws {
+        try withHome(hooks: Self.occupied) { home, hook in
+            try installer(["install", hook.path, "--provider", "codex"], home: home)
+
+            let pre = try groups(home, "PreToolUse")
+            #expect(pre.count == 3)
+            #expect(command(pre[0]) == "/other/tool.sh", "still group 0")
+            #expect(command(pre[1]) == "/usr/bin/python3 /x/git.py", "still group 1")
+            #expect(command(pre[2])?.hasSuffix("notchling-hook --provider codex") == true)
+
+            // Their group is not just in place, it is untouched: matcher, timeout and all.
+            #expect(pre[1]["matcher"] as? String == "^Bash$")
+            let theirs = try #require((pre[1]["hooks"] as? [[String: Any]])?.first)
+            #expect(theirs["timeout"] as? Int == 90)
+            #expect(theirs["statusMessage"] as? String == "Checking")
+        }
+    }
+
+    /// The hook is told which agent it is serving because nothing in a payload says: Codex names every
+    /// shared event exactly as Claude Code does, and its field names match too.
+    @Test("the command written names the agent")
+    func commandCarriesTheProvider() throws {
+        try withHome { home, hook in
+            try installer(["install", hook.path, "--provider", "codex"], home: home)
+            let start = try groups(home, "SessionStart")
+            #expect(command(start.first ?? [:]) == "\(hook.path) --provider codex")
+        }
+    }
+
+    /// Codex caps `SessionEnd` and `Interrupt` at three seconds and warns on every session start if a
+    /// hook asks for more, while every other event defaults to six hundred — long enough for a wedged
+    /// hook to hold a tool call for ten minutes.
+    @Test("every event is given a timeout inside Codex's own limits", arguments: [
+        "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest",
+        "SubagentStart", "SubagentStop", "Stop", "Interrupt", "PreCompact", "PostCompact", "SessionEnd",
+    ])
+    func timeoutsAreBounded(event: String) throws {
+        try withHome { home, hook in
+            try installer(["install", hook.path, "--provider", "codex"], home: home)
+            let entry = try #require((try groups(home, event).first?["hooks"] as? [[String: Any]])?.first)
+            let timeout = try #require(entry["timeout"] as? Int)
+            #expect(timeout >= 1)
+            #expect(timeout <= 3, "\(event) must fit the strictest cap, which is SessionEnd's")
+        }
+    }
+
+    @Test("installing twice wires nothing twice")
+    func installIsIdempotent() throws {
+        try withHome(hooks: Self.occupied) { home, hook in
+            try installer(["install", hook.path, "--provider", "codex"], home: home)
+            try installer(["install", hook.path, "--provider", "codex"], home: home)
+
+            #expect(try groups(home, "PreToolUse").count == 3)
+            #expect(try groups(home, "SessionStart").count == 1)
+        }
+    }
+
+    /// The whole point of the additive rule: someone who tries Notchling and removes it should not be
+    /// able to tell it was ever there.
+    @Test("uninstalling puts the file back exactly as it was")
+    func uninstallRestoresTheFile() throws {
+        try withHome(hooks: Self.occupied) { home, hook in
+            let before = try hooksFile(home)
+            try installer(["install", hook.path, "--provider", "codex"], home: home)
+            try installer(["uninstall", hook.path, "--provider", "codex"], home: home)
+
+            let after = try hooksFile(home)
+            #expect(
+                try JSONSerialization.data(withJSONObject: after, options: .sortedKeys)
+                    == JSONSerialization.data(withJSONObject: before, options: .sortedKeys)
+            )
+        }
+    }
+
+    /// Writing the file is not enough and cannot be. Codex will not run a hook whose definition has
+    /// not been reviewed, and the record of that review is a hash it keeps itself — writing one here
+    /// would forge an answer to a question meant for the person.
+    @Test("installing says what the person still has to do")
+    func installAsksForTrust() throws {
+        try withHome { home, hook in
+            let run = try installer(["install", hook.path, "--provider", "codex"], home: home)
+            #expect(run.status == 0)
+            #expect(run.output.contains("/hooks"))
+            #expect(!run.output.lowercased().contains("restart any running claude"))
+        }
+    }
+
+    /// A file Notchling cannot parse belongs to somebody else and is left alone. Replacing it with our
+    /// idea of it would cost them every hook they have.
+    @Test("a hooks file that does not parse is refused, not rewritten")
+    func malformedFileIsRefused() throws {
+        try withHome { home, hook in
+            let path = home.appendingPathComponent(".codex/hooks.json")
+            try "{{{ not json".write(to: path, atomically: true, encoding: .utf8)
+
+            let run = try installer(["install", hook.path, "--provider", "codex"], home: home)
+            #expect(run.status != 0)
+            #expect(try String(contentsOf: path, encoding: .utf8) == "{{{ not json")
+        }
+    }
+
+    /// `CODEX_HOME` relocates the whole directory, and a widget launched at login inherits no terminal
+    /// environment — so the resolved path has to be written down rather than assumed again later.
+    @Test("a relocated Codex home is honoured")
+    func codexHomeIsHonoured() throws {
+        try withHome { home, hook in
+            let elsewhere = home.appendingPathComponent("elsewhere")
+            try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+
+            let process = Process()
+            process.executableURL = try #require(scripts?.installer)
+            process.arguments = ["install", hook.path, "--provider", "codex"]
+            var environment = ProcessInfo.processInfo.environment
+            environment["HOME"] = home.path
+            environment["CODEX_HOME"] = elsewhere.path
+            process.environment = environment
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+            process.standardInput = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+
+            #expect(FileManager.default.fileExists(atPath: elsewhere.appendingPathComponent("hooks.json").path))
+            #expect(!FileManager.default.fileExists(atPath: home.appendingPathComponent(".codex/hooks.json").path))
+        }
+    }
+
+    /// Claude Code's own wiring must not move. The two are installed separately, and someone who has
+    /// only ever run Claude should see no difference at all.
+    @Test("the Claude path is unchanged, and writes no timeout")
+    func claudeWiringIsUnchanged() throws {
+        try withHome { home, hook in
+            let claude = home.appendingPathComponent(".claude")
+            try FileManager.default.createDirectory(at: claude, withIntermediateDirectories: true)
+            try "{}".write(to: claude.appendingPathComponent("settings.json"), atomically: true, encoding: .utf8)
+
+            try installer(["install", hook.path], home: home)
+
+            let data = try Data(contentsOf: claude.appendingPathComponent("settings.json"))
+            let settings = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let hooks = try #require(settings["hooks"] as? [String: Any])
+            let group = try #require((hooks["PreToolUse"] as? [[String: Any]])?.first)
+            let entry = try #require((group["hooks"] as? [[String: Any]])?.first)
+
+            #expect(entry["command"] as? String == hook.path, "no provider argument")
+            #expect(entry["timeout"] == nil, "Claude Code's entries are as they always were")
+            #expect(hooks["PostToolUse"] == nil, "still refused: its payload carries the tool's output")
+        }
+    }
+
+    @Test("the status line stays Claude Code's")
+    func statusLineRefusesAProvider() throws {
+        try withHome { home, _ in
+            let run = try installer(["statusline", "--provider", "codex"], home: home)
+            #expect(run.status != 0)
+            #expect(run.output.contains("status line"))
+        }
+    }
+}
