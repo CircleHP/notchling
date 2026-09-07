@@ -133,7 +133,7 @@ struct PreferencesView: View {
 
     @State private var collection: Collection = .idle
     @State private var showsPlanUsage = PanelPreference.showsPlanUsage
-    @State private var wiring: ClaudeWiring?
+    @State private var wiring: AgentWiring?
     @State private var wiringError: String?
     @State private var isWiring = false
     /// Raised only when something else holds the status line slot, because that is the one action
@@ -149,9 +149,15 @@ struct PreferencesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             identity
-            if ClaudeSetup.isSupported {
+            if AgentSetup.isSupported {
                 Divider()
                 claudeCode
+                // Only for a machine that has Codex. An agent nobody here runs is not a row worth
+                // drawing, and a row offering to wire one is worse — it reads as something missing.
+                if showsCodex {
+                    Divider()
+                    codex
+                }
             }
             Divider()
             panel
@@ -185,7 +191,7 @@ struct PreferencesView: View {
     ///
     /// Every row reads its real state first, so the button says the true next action rather than a
     /// hopeful "Install" — and every button runs the same script the command line does. The state
-    /// itself is never decided here: see `ClaudeSetup`.
+    /// itself is never decided here: see `AgentSetup`.
     private var claudeCode: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Claude Code")
@@ -226,15 +232,93 @@ struct PreferencesView: View {
             isPresented: $askingAboutStatusLine,
             titleVisibility: .visible
         ) {
-            Button("Run Notchling in Front of It") { perform { try ClaudeSetup.addStatusLine(occupied: .chain) } }
-            Button("Replace It", role: .destructive) { perform { try ClaudeSetup.addStatusLine(occupied: .replace) } }
+            Button("Run Notchling in Front of It") { perform { try AgentSetup.addStatusLine(occupied: .chain) } }
+            Button("Replace It", role: .destructive) { perform { try AgentSetup.addStatusLine(occupied: .replace) } }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("\(wiring?.statusLineCommand ?? "It") has the one status line slot, and the plan limits reach it and nothing else. Notchling can read the same payload and print nothing, leaving yours to print exactly what it prints now.")
         }
     }
 
-    private func hooksDetail(_ wiring: ClaudeWiring) -> String {
+    // MARK: - Codex
+
+    /// Shown only where there is something to say. `available` is the machine looking like it has
+    /// Codex; the second half covers hooks left wired by an install that has since gone.
+    private var showsCodex: Bool {
+        guard let codex = wiring?.codex else { return false }
+        return codex.available || codex.hooks != .none
+    }
+
+    /// One row, because hooks are the whole of Codex's surface: there is no registry to discover
+    /// sessions from and no status line slot to put plan usage in.
+    @ViewBuilder
+    private var codex: some View {
+        if let wiring, let codex = wiring.codex {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Codex")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                WiringRow(
+                    title: "Hooks",
+                    detail: codexHooksDetail(codex),
+                    action: codexHooksAction(codex, resolved: wiring.hookResolved),
+                    isBusy: isWiring
+                )
+
+                Text(codexFootnote(codex))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func codexHooksDetail(_ codex: CodexWiring) -> String {
+        switch codex.hooks {
+        case .wired: "Wired"
+        case .none: "Not wired — Codex sessions do not appear at all"
+        case .elsewhere: "Wired to another copy of Notchling"
+        // Not something this writes, and not something it should claim to have found either.
+        case .plugin: "Provided by a Codex plugin"
+        }
+    }
+
+    /// `resolved` is the hook binary this build would write down. Nothing is offered that cannot run:
+    /// without one the script dies, and a button whose only outcome is an error is worse than none.
+    private func codexHooksAction(_ codex: CodexWiring, resolved: String) -> WiringRow.Action? {
+        switch codex.hooks {
+        case .wired:
+            .init(title: "Unwire") { perform { try AgentSetup.unwireHooks(provider: .codex) } }
+        case .none:
+            resolved.isEmpty
+                ? nil
+                : .init(title: "Wire") { perform { try AgentSetup.wireHooks(provider: .codex) } }
+        case .elsewhere:
+            resolved.isEmpty
+                ? nil
+                : .init(title: "Re-point") { [stale = codex.hookCommand] in
+                    perform { try AgentSetup.repointHooks(from: stale, provider: .codex) }
+                }
+        case .plugin:
+            nil
+        }
+    }
+
+    /// Wiring the file is not the last step here, which is the one thing about Codex a person has to
+    /// be told: it will not run a hook it has not been asked about.
+    private func codexFootnote(_ codex: CodexWiring) -> String {
+        switch codex.hooks {
+        case .wired, .elsewhere, .plugin:
+            "Run /hooks inside Codex to review and trust these. Sessions started from then on pick "
+                + "them up; ones already running never will."
+        case .none:
+            "Wiring appends to \(codex.home), backs it up first and leaves other tools alone. "
+                + "Codex then asks you to review the hooks before it runs any of them."
+        }
+    }
+
+    private func hooksDetail(_ wiring: AgentWiring) -> String {
         switch wiring.hooks {
         case .wired: "Wired"
         case .none: "Not wired — the widget sees sessions but not what they are doing"
@@ -249,19 +333,19 @@ struct PreferencesView: View {
     /// Nothing is offered that cannot run. Wiring and re-pointing both need a hook binary to have
     /// been found; without one the script dies, and a button whose only outcome is an error message
     /// is worse than no button.
-    private func hooksAction(_ wiring: ClaudeWiring) -> WiringRow.Action? {
+    private func hooksAction(_ wiring: AgentWiring) -> WiringRow.Action? {
         switch wiring.hooks {
         case .wired:
-            .init(title: "Unwire") { perform { try ClaudeSetup.unwireHooks() } }
+            .init(title: "Unwire") { perform { try AgentSetup.unwireHooks() } }
         case .none:
             wiring.hookResolved.isEmpty
                 ? nil
-                : .init(title: "Wire") { perform { try ClaudeSetup.wireHooks() } }
+                : .init(title: "Wire") { perform { try AgentSetup.wireHooks() } }
         case .elsewhere:
             wiring.hookResolved.isEmpty
                 ? nil
                 : .init(title: "Re-point") { [stale = wiring.hookCommand] in
-                    perform { try ClaudeSetup.repointHooks(from: stale) }
+                    perform { try AgentSetup.repointHooks(from: stale) }
                 }
         // The plugin's own hooks are not ours to remove — but a settings.json copy alongside them is
         // exactly the double-reporting `setup` offers to undo, and hiding it makes a machine that is
@@ -270,12 +354,12 @@ struct PreferencesView: View {
             wiring.hookCommand.isEmpty
                 ? nil
                 : .init(title: "Unwire") { [stale = wiring.hookCommand] in
-                    perform { try ClaudeSetup.unwireHooks(at: stale) }
+                    perform { try AgentSetup.unwireHooks(at: stale) }
                 }
         }
     }
 
-    private func statusLineDetail(_ wiring: ClaudeWiring) -> String {
+    private func statusLineDetail(_ wiring: AgentWiring) -> String {
         switch wiring.statusLine {
         case .ours: "Wired"
         case .chain: "Wired, in front of \(wiring.wrapped)"
@@ -284,9 +368,9 @@ struct PreferencesView: View {
         }
     }
 
-    private func statusLineAction(_ wiring: ClaudeWiring) -> WiringRow.Action? {
+    private func statusLineAction(_ wiring: AgentWiring) -> WiringRow.Action? {
         switch wiring.statusLine {
-        case .ours, .chain: .init(title: "Remove") { perform { try ClaudeSetup.removeStatusLine() } }
+        case .ours, .chain: .init(title: "Remove") { perform { try AgentSetup.removeStatusLine() } }
         case .foreign:
             wiring.statusLineResolved.isEmpty
                 ? nil
@@ -294,14 +378,14 @@ struct PreferencesView: View {
         case .none:
             wiring.statusLineResolved.isEmpty
                 ? nil
-                : .init(title: "Wire") { perform { try ClaudeSetup.addStatusLine() } }
+                : .init(title: "Wire") { perform { try AgentSetup.addStatusLine() } }
         }
     }
 
     /// Off the main actor: `status` shells out to `claude plugin list`, which is not instant, and the
     /// window is drawing a spinner for that whole time.
     private func reloadWiring() async {
-        let read = await Task.detached { Result { try ClaudeSetup.read() } }.value
+        let read = await Task.detached { Result { try AgentSetup.read() } }.value
         switch read {
         case let .success(current):
             wiring = current
@@ -328,8 +412,8 @@ struct PreferencesView: View {
 
     private static func message(for error: Error) -> String {
         switch error {
-        case ClaudeSetup.Failure.unavailable: "This copy of Notchling has no installer beside it."
-        case let ClaudeSetup.Failure.failed(reason): reason
+        case AgentSetup.Failure.unavailable: "This copy of Notchling has no installer beside it."
+        case let AgentSetup.Failure.failed(reason): reason
         default: "Could not read what is wired."
         }
     }
