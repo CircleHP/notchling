@@ -1357,18 +1357,25 @@ struct PanelLayoutTests {
 /// one is already running — so a test has to give that hop somewhere to land and keep asking, the
 /// way the app does by rescanning the registry every couple of seconds. The timeout is only here so
 /// a failure fails instead of hanging.
+///
+/// Both numbers are about the machine this runs on rather than about anything the reader promises.
+/// In isolation the answer arrives in a few milliseconds; under the whole suite every `@MainActor`
+/// test competes for the same actor, and on a small CI runner a three-second budget spent polling
+/// every five milliseconds ran out before the hop it was waiting for got a slot. Asking less often
+/// leaves more of them for the completion, and a longer deadline costs nothing when it is not needed:
+/// this returns as soon as the condition holds.
 @MainActor
 private func settle(
     _ store: SessionStore,
     registry entry: RegistryEntry,
-    timeout: TimeInterval = 3,
+    timeout: TimeInterval = 10,
     until condition: () -> Bool
 ) async -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
         if condition() { return true }
         store.apply(registry: [entry])
-        try? await Task.sleep(nanoseconds: 5_000_000)
+        try? await Task.sleep(nanoseconds: 20_000_000)
     }
     return condition()
 }
@@ -1695,19 +1702,20 @@ struct ConcurrentCallTests {
 }
 
 /// The same, for a session with no registry to re-scan: something still has to keep poking the store so
-/// the reader's hop has somewhere to land.
+/// the reader's hop has somewhere to land. Its budget and interval are the one above's, for the reason
+/// given there.
 @MainActor
 private func settle(
     _ store: SessionStore,
     poke: () -> Void,
-    timeout: TimeInterval = 3,
+    timeout: TimeInterval = 10,
     until condition: () -> Bool
 ) async -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
         if condition() { return true }
         poke()
-        try? await Task.sleep(nanoseconds: 5_000_000)
+        try? await Task.sleep(nanoseconds: 20_000_000)
     }
     return condition()
 }
@@ -2010,7 +2018,9 @@ struct CodexMetricsTests {
         let path = rollout()
         defer { try? FileManager.default.removeItem(atPath: path) }
 
-        let store = SessionStore()
+        // Told the switch is on rather than asked: this is about what a rollout yields, and reading the
+        // real preference would make it depend on a machine's settings and on whatever else is running.
+        let store = SessionStore(showsPlanUsage: { _ in true })
         let event = { store.apply(codexEvent("UserPromptSubmit", ["transcriptPath": path, "model": "gpt-5.6-sol"])) }
         event()
 

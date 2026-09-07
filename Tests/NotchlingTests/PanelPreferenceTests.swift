@@ -87,19 +87,24 @@ struct PanelPreferenceTests {
                 "the panel draws whatever this holds, so hiding means emptying it")
     }
 
-    /// What the store does by default, which is what an upgrade gets: the real preference, unwritten.
+    /// A store nobody tells reads the real preference, which is what the app relies on and the only
+    /// part of this the injection above could hide.
+    ///
+    /// Asserted in the "off" direction on purpose: "on" would have the sweep replace what is here with
+    /// a fresh read of `~/.notchling/usage/`, so it would pass on a machine that has been running the
+    /// status line and fail on one that has not.
     @Test("a store nobody told reads the preference itself")
     func theDefaultIsThePreference() {
-        withPlanUsage(nil) {
+        withPlanUsage(false, for: .codex) {
             let store = SessionStore()
-            store.usage[.claude] = UsageSnapshot(
-                fiveHour: UsageWindow(usedPercentage: 40, resetsAt: .now.addingTimeInterval(3600)),
+            store.usage[.codex] = UsageSnapshot(
+                fiveHour: UsageWindow(usedPercentage: 77, resetsAt: .now.addingTimeInterval(3600)),
                 sevenDay: nil,
                 updatedAt: .now
             )
 
             store.tick()
-            #expect(store.usage[.claude] != nil, "an absent key means the numbers are shown")
+            #expect(store.usage[.codex] == nil, "the real preference reached the store")
         }
     }
 }
