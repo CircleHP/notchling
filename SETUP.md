@@ -89,6 +89,40 @@ The Homebrew formula itself never touches that file: a package manager rewriting
 configuration would be invisible and undone by nothing on uninstall, which is why `setup` is a separate
 command that asks.
 
+## Upgrading
+
+```sh
+brew upgrade notchling
+brew services restart notchling
+```
+
+The restart is not optional: Homebrew replaces the files but leaves the running app alone, so the
+widget keeps running the version it started with until something restarts it. The panel has a button
+for exactly this — its header carries three, on the right: settings, restart, stop. It also notices on
+its own, a version on disk that is not the one it is running getting a row offering to restart into it,
+but it looks every six hours rather than continuously, so an upgrade can land long before it is
+mentioned. Restart rather than wait to be told.
+
+Stop is the one that ends the widget, and it asks first: under `brew services` it will not come back
+until `brew services start notchling`, or until you next log in.
+
+Nothing needs rewiring. The hooks record `$(brew --prefix)/bin/notchling-hook` and the status line the
+`opt` path, both of which Homebrew repoints at the new version. On the plugin route, `/plugin update
+notchling@circlehp` picks up the new hooks.
+
+If you use the **iTerm2 or Terminal.app** jump, macOS asks for permission to control them again after
+an upgrade — an ad-hoc signature's identity changes with every build, so the previous grant no longer
+matches. Warp is unaffected.
+
+### Update checks
+
+The panel asks once whether to check daily for a new release. Checks are off until you agree.
+In the settings window behind the gear, you can turn daily checks on or off, choose the hour, or
+press **Check Now** for a single check. Installing an update always takes a separate click.
+
+Checks fetch this project's public Homebrew tap to compare versions. No session data is sent; see
+[NOTICE.md](NOTICE.md) for the full privacy details.
+
 ## Reading the widget
 
 <p align="center">
