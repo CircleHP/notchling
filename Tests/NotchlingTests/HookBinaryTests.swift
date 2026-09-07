@@ -31,10 +31,15 @@ func hookEnvironment(home: URL, extra: [String: String] = [:]) -> [String: Strin
 
 /// Run the hook with a payload on stdin and an isolated home, and return what it did.
 @discardableResult
-func runHook(_ payload: [String: Any], home: URL) throws -> (stdout: String, stderr: String, status: Int32) {
+func runHook(
+    _ payload: [String: Any],
+    home: URL,
+    arguments: [String] = []
+) throws -> (stdout: String, stderr: String, status: Int32) {
     let process = Process()
     process.executableURL = try #require(hookBinary)
     process.environment = hookEnvironment(home: home)
+    process.arguments = arguments
 
     let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
     process.standardInput = inPipe
@@ -386,5 +391,181 @@ struct HookBinaryTests {
         let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
         #expect(names.allSatisfy { !$0.hasPrefix(".") && $0.hasSuffix(".json") },
                 "the write is tmp-then-rename, so nothing half-written should survive")
+    }
+}
+
+/// Payload shapes captured from `codex-cli 0.153.4` rather than written from the schemas, with the
+/// machine's own paths and the assistant's own words replaced. A schema drift then shows up as one of
+/// these failing rather than as a dead panel.
+enum CodexPayload {
+    static let sessionID = "01a07bc6-c774-7df0-bc89-d9dc3d8f0cfa"
+    static let turnID = "01a07bc7-a0c8-7ec2-8825-99082b58cd26"
+
+    static var preToolUse: [String: Any] {
+        [
+            "session_id": sessionID,
+            "turn_id": turnID,
+            "transcript_path": "/tmp/codex/rollout-\(sessionID).jsonl",
+            "cwd": "/w",
+            "hook_event_name": "PreToolUse",
+            "model": "gpt-6-astra",
+            "permission_mode": "default",
+            "tool_name": "webrun",
+            // Entirely tool-shaped, and nothing like Claude's: no `description`, no `command`.
+            "tool_input": ["weather": [["location": "Somewhere", "duration": 1]], "response_length": "short"],
+            "tool_use_id": "exec-21355597-0a82-4429-9079-2332c0aeae0d",
+        ]
+    }
+
+    static var stop: [String: Any] {
+        [
+            "session_id": sessionID,
+            "turn_id": turnID,
+            "transcript_path": "/tmp/codex/rollout-\(sessionID).jsonl",
+            "cwd": "/w",
+            "hook_event_name": "Stop",
+            "model": "gpt-6-astra",
+            "permission_mode": "default",
+            "stop_hook_active": false,
+            "last_assistant_message": "the answer",
+        ]
+    }
+
+    /// Five keys, and neither a model nor a turn among them.
+    static var sessionEnd: [String: Any] {
+        [
+            "session_id": sessionID,
+            "transcript_path": "/tmp/codex/rollout-\(sessionID).jsonl",
+            "cwd": "/w",
+            "hook_event_name": "SessionEnd",
+            "reason": "other",
+        ]
+    }
+}
+
+@Suite("notchling-hook — Codex", .enabled(if: hookBinary != nil, "notchling-hook has not been built"))
+struct CodexHookTests {
+    /// Codex names every shared event exactly as Claude does, so the flag is not an optimisation over
+    /// sniffing the payload — it is the only thing that can tell them apart.
+    @Test("a Codex event is written under the version that names its agent")
+    func codexEventCarriesProvider() throws {
+        let home = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        try runHook(CodexPayload.preToolUse, home: home, arguments: ["--provider", "codex"])
+
+        let event = try #require(spooledEvents(home: home).first)
+        #expect(event["v"] as? Int == 2)
+        #expect(event["provider"] as? String == "codex")
+        #expect(event["event"] as? String == "PreToolUse")
+        #expect(event["sessionId"] as? String == CodexPayload.sessionID)
+        #expect(event["turnId"] as? String == CodexPayload.turnID)
+        #expect(event["toolUseId"] as? String == "exec-21355597-0a82-4429-9079-2332c0aeae0d")
+        #expect(event["model"] as? String == "gpt-6-astra")
+        #expect(event["toolName"] as? String == "webrun")
+    }
+
+    /// Claude's output must not move at all: the hook and the app are upgraded separately, and a hook
+    /// that started naming its agent on v1 would let a build predating providers read another agent's
+    /// session as a Claude one.
+    @Test("without the flag nothing changes")
+    func claudeOutputIsUnchanged() throws {
+        let home = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        try runHook(["hook_event_name": "PreToolUse", "session_id": "s1", "tool_name": "Bash"], home: home)
+
+        let event = try #require(spooledEvents(home: home).first)
+        #expect(event["v"] as? Int == 1)
+        #expect(event["provider"] == nil, "v1 says Claude by its silence")
+    }
+
+    /// Codex's dedicated permission event is what Claude reports as a notification carrying
+    /// `permission_prompt`. Normalised in the hook so the store keeps one name per meaning.
+    @Test("PermissionRequest arrives as the notification the store already understands")
+    func permissionRequestIsNormalised() throws {
+        let home = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        try runHook([
+            "hook_event_name": "PermissionRequest",
+            "session_id": CodexPayload.sessionID,
+            "turn_id": CodexPayload.turnID,
+            "cwd": "/w",
+            "model": "gpt-6-astra",
+            "permission_mode": "default",
+            "tool_name": "Bash",
+            "tool_input": [
+                "command": "gh issue list --repo o/r",
+                "description": "Allow read-only GitHub access?",
+            ],
+        ], home: home, arguments: ["--provider", "codex"])
+
+        let event = try #require(spooledEvents(home: home).first)
+        #expect(event["event"] as? String == "Notification")
+        #expect(event["notificationType"] as? String == "permission_prompt")
+        #expect(event["toolName"] as? String == "Bash")
+        // Codex's own words for the question it is asking, which is better than anything derivable
+        // from the tool name.
+        #expect(event["message"] as? String == "Allow read-only GitHub access?")
+        #expect(event["toolSummary"] as? String == "Allow read-only GitHub access?")
+    }
+
+    /// `PostToolUse` is the only tool-finished edge Codex offers, so it has to be consumed — but its
+    /// response is the payload Claude's is refused for, and none of it may reach the spool.
+    @Test("a tool response is read and discarded, never spooled")
+    func toolResponseIsNotKept() throws {
+        let home = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        var payload = CodexPayload.preToolUse
+        payload["hook_event_name"] = "PostToolUse"
+        payload["tool_response"] = [String(repeating: "x", count: 200_000)]
+
+        try runHook(payload, home: home, arguments: ["--provider", "codex"])
+
+        let spool = home.appendingPathComponent(".notchling/events")
+        let files = try FileManager.default
+            .contentsOfDirectory(atPath: spool.path)
+            .filter { $0.hasSuffix(".json") }
+        let name = try #require(files.first)
+        let attributes = try FileManager.default
+            .attributesOfItem(atPath: spool.appendingPathComponent(name).path)
+        let size = try #require(attributes[.size] as? Int)
+
+        let event = try #require(spooledEvents(home: home).first)
+        #expect(event["toolResponse"] == nil)
+        #expect(event["event"] as? String == "PostToolUse")
+        #expect(size < 2_000, "the response was 200KB; the spool file is \(size) bytes")
+    }
+
+    /// An agent this build does not know is not a Claude event, and not an event under an invented
+    /// name either. Both would be worse than recording nothing.
+    @Test("an unknown agent records nothing, and still cannot break a session")
+    func unknownProviderRecordsNothing() throws {
+        let home = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let result = try runHook(
+            CodexPayload.preToolUse, home: home, arguments: ["--provider", "gemini"]
+        )
+
+        #expect(result.stdout.isEmpty, "stdout is the agent's, and it acts on what it finds there")
+        #expect(result.status == 0)
+        #expect(spooledEvents(home: home).isEmpty)
+    }
+
+    @Test("SessionEnd carries its reason, with no model or turn to carry")
+    func sessionEndIsMinimal() throws {
+        let home = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        try runHook(CodexPayload.sessionEnd, home: home, arguments: ["--provider=codex"])
+
+        let event = try #require(spooledEvents(home: home).first)
+        #expect(event["event"] as? String == "SessionEnd")
+        #expect(event["reason"] as? String == "other")
+        #expect(event["model"] == nil)
+        #expect(event["turnId"] == nil)
     }
 }

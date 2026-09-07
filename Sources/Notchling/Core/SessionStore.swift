@@ -179,8 +179,11 @@ final class SessionStore {
     // MARK: - Hook events
 
     func apply(_ event: HookEvent) {
-        let key = event.sessionKey
-        var session = index[key] ?? Session(sessionID: event.sessionId, provider: event.provider)
+        // The watcher sets aside every event whose agent this build cannot name, so reaching here with
+        // an unknown one should be impossible. Belt and braces: the cost of being wrong is a session
+        // filed under the wrong agent, and every source keyed by it then answering for the wrong one.
+        guard let key = event.sessionKey else { return }
+        var session = index[key] ?? Session(sessionID: event.sessionId, provider: key.provider)
         let previous = session.state
 
         if let pid = event.pid { adopt(pid: pid, startedAt: event.pidStartedAt, on: &session) }

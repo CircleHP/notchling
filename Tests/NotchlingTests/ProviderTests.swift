@@ -37,6 +37,19 @@ struct SessionIdentityTests {
         #expect(store.session(key: SessionKey(provider: .codex, id: sameID)) == nil)
     }
 
+    /// The payoff, end to end through the real decode path: two agents reporting the same session id
+    /// are two sessions, each carrying its own agent.
+    @Test("the same id under two agents is two sessions in the store")
+    func storeHoldsBothAgents() {
+        let store = SessionStore()
+        store.apply(hookEvent("UserPromptSubmit", session: sameID))
+        store.apply(codexEvent("UserPromptSubmit", session: sameID))
+
+        #expect(store.sessions.count == 2)
+        #expect(store.session(key: SessionKey(provider: .claude, id: sameID))?.provider == .claude)
+        #expect(store.session(key: SessionKey(provider: .codex, id: sameID))?.provider == .codex)
+    }
+
     /// Two rows, not one. `PanelRow.id` is SwiftUI's identity for the list, so a shared id would collapse
     /// two sessions into one row and leave the other undrawable.
     @Test("two agents sharing an id are two rows")
