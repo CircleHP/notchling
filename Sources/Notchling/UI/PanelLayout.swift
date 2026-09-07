@@ -57,11 +57,23 @@ struct PanelLayout {
     let rows: [PanelRow]
     let hiddenSessions: [Session]
 
+    /// Whether the panel is showing more than one agent's sessions.
+    ///
+    /// What it gates is anything that would otherwise appear to speak for all of them — the plan-usage
+    /// bars, which are one account's on one agent. Rows themselves need no flag: each carries its
+    /// agent in the shape of its mark, at no cost in width, whether or not there is another to
+    /// contrast with.
+    let hasMultipleProviders: Bool
+
     init(
         sessions: [Session],
         limit: Int = Self.maximumRows,
         agentLimit: Int = Self.maximumAgentRows
     ) {
+        // Counted over every session rather than the drawn ones, so it does not flicker as rows cross
+        // the cap.
+        hasMultipleProviders = Set(sessions.map(\.provider)).count > 1
+
         let shown = Array(sessions.prefix(limit))
         hiddenSessions = Array(sessions.dropFirst(limit))
 

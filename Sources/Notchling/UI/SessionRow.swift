@@ -15,7 +15,7 @@ struct SessionRow: View {
     var body: some View {
         Button { onFocus(session) } label: {
             HStack(alignment: .top, spacing: metrics.size(8)) {
-                StateDot(state: session.state)
+                SessionMark(provider: session.provider, state: session.state)
                     .padding(.top, metrics.size(3))
 
                 VStack(alignment: .leading, spacing: metrics.size(1)) {
@@ -142,6 +142,7 @@ struct SessionRow: View {
                 parts.append("+\(added) −\(removed) lines this session")
             }
         }
+        parts.append("\(session.provider.displayName) session")
         if TerminalFocus.canFocusPrecisely(session) {
             parts.append("Click to focus its tab")
         } else {
@@ -182,18 +183,32 @@ private struct MetricsLine: View {
     }
 }
 
-private struct StateDot: View {
+/// The mark at the head of a row: its shape says which agent the session belongs to, its fill says what
+/// the session is doing.
+///
+/// Two facts in the space of one. The state was already said twice — this fill and the label on the
+/// right — so the shape was going spare; and it is shape rather than a second colour because both
+/// colour meanings on a row are already taken, by this fill and by the `/color` gutter beside it. A
+/// third would read as a third state, the state palette having claimed red, amber and green already.
+///
+/// Drawn rather than borrowed. At this size neither agent's own mark survives — the rule that makes the
+/// mascot legible, that nothing inked may be narrower than two pixels, is one no logo obeys — and
+/// putting two companies' marks in a third-party widget is a question better not answered here.
+private struct SessionMark: View {
+    let provider: Provider
     let state: SessionState
 
     @Environment(\.widgetMetrics) private var metrics
 
     var body: some View {
-        Circle()
+        mark
             .fill(Theme.color(for: state))
-            .frame(width: metrics.size(6), height: metrics.size(6))
+            .frame(width: side, height: side)
+            .rotationEffect(.degrees(provider == .codex ? 45 : 0))
             .overlay {
                 // A ring on the states that want attention, so they stay distinguishable without
-                // relying on colour alone.
+                // relying on colour alone. Round whichever mark it surrounds: it is a halo, not part
+                // of the shape that identifies the agent.
                 if state == .needsYou || state == .error {
                     Circle()
                         .stroke(
@@ -203,6 +218,20 @@ private struct StateDot: View {
                         .frame(width: metrics.size(11), height: metrics.size(11))
                 }
             }
+    }
+
+    private var mark: AnyShape {
+        switch provider {
+        // Unchanged, so a panel that has only ever shown Claude sessions looks exactly as it did.
+        case .claude: AnyShape(Circle())
+        case .codex: AnyShape(RoundedRectangle(cornerRadius: metrics.size(1)))
+        }
+    }
+
+    /// A square standing on its corner reads wider than a circle of the same width, so it is drawn
+    /// smaller to carry the same weight down the column.
+    private var side: CGFloat {
+        metrics.size(provider == .claude ? 6 : 5)
     }
 }
 

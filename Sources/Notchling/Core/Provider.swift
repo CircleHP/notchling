@@ -12,6 +12,14 @@ enum Provider: String, Codable, Sendable {
     case claude
     case codex
 
+    /// The agent's own name, for anywhere there is room for it.
+    var displayName: String {
+        switch self {
+        case .claude: "Claude Code"
+        case .codex: "Codex"
+        }
+    }
+
     var capabilities: Capabilities {
         switch self {
         case .claude: Capabilities(

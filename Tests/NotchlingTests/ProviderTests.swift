@@ -64,6 +64,56 @@ struct SessionIdentityTests {
         #expect(Set(layout.rows.map(\.id)).count == 2)
     }
 
+    /// The plan-usage bars are one account's on one agent, so they have to say so the moment anything
+    /// else is on screen — and stay unlabelled when there is nothing to distinguish them from.
+    @Test("the panel knows when it is showing more than one agent")
+    func panelKnowsWhenAgentsAreMixed() {
+        var claude = Session(sessionID: "a", provider: .claude)
+        claude.state = .working
+        var codex = Session(sessionID: "b", provider: .codex)
+        codex.state = .working
+
+        #expect(PanelLayout(sessions: [claude]).hasMultipleProviders == false)
+        #expect(PanelLayout(sessions: [claude, claude]).hasMultipleProviders == false)
+        #expect(PanelLayout(sessions: [claude, codex]).hasMultipleProviders)
+    }
+
+    /// Counted over every session rather than the drawn ones, so a caption does not appear and vanish
+    /// as rows cross the cap.
+    @Test("a second agent below the row cap still counts")
+    func hiddenSessionsStillCount() {
+        let claude = (0 ..< 10).map { Session(sessionID: "c\($0)", provider: .claude) }
+        let codex = [Session(sessionID: "x", provider: .codex)]
+
+        let layout = PanelLayout(sessions: claude + codex, limit: 4)
+        #expect(!layout.hiddenSessions.isEmpty)
+        #expect(layout.hasMultipleProviders)
+    }
+
+    @Test("each agent is named in its own words")
+    func agentsAreNamed() {
+        #expect(Provider.claude.displayName == "Claude Code")
+        #expect(Provider.codex.displayName == "Codex")
+    }
+
+    /// The mascot and the strip badges read these, and someone running both agents wants to know that
+    /// *something* is blocked rather than which agent it was.
+    @Test("counts and the aggregate state span both agents")
+    func aggregatesSpanProviders() {
+        let store = SessionStore()
+        store.apply(hookEvent("UserPromptSubmit", session: "cc1"))
+        store.apply(codexEvent("UserPromptSubmit", session: "cx1"))
+        #expect(store.workingCount == 2)
+        #expect(store.aggregateState == .working)
+
+        store.apply(codexEvent("Notification", session: "cx1", [
+            "notificationType": "permission_prompt",
+        ]))
+        #expect(store.needsYouCount == 1)
+        #expect(store.workingCount == 1)
+        #expect(store.aggregateState == .needsYou, "whoever is blocked, someone is")
+    }
+
     /// The cue dedupe is what stops a second permission prompt in one turn sounding twice. Keyed by the
     /// bare id, one agent entering `needsYou` would silence the other's.
     @Test("one agent's cue does not silence the other's")

@@ -7,11 +7,18 @@ import SwiftUI
 
 struct UsageBarSection: View {
     let usage: UsageSnapshot
+    /// Whose plan these bars describe, where that needs saying. See the call site in `ExpandedView`.
+    var attribution: String?
 
     @Environment(\.widgetMetrics) private var metrics
 
     var body: some View {
         VStack(alignment: .leading, spacing: metrics.size(5)) {
+            if let attribution {
+                Text(attribution)
+                    .font(metrics.font(9, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Theme.dim)
+            }
             if let fiveHour = usage.fiveHour {
                 UsageRow(label: "5h", window: fiveHour, isStale: usage.isStale)
             }

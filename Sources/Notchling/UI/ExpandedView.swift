@@ -62,7 +62,7 @@ struct ExpandedView: View {
             }
 
             if layout.rows.isEmpty {
-                Text("No Claude sessions running")
+                Text("No sessions running")
                     .font(metrics.font(12))
                     .foregroundStyle(Theme.dim)
                     .padding(.vertical, metrics.size(6))
@@ -87,7 +87,13 @@ struct ExpandedView: View {
                     .overlay(Theme.hairline)
                     .padding(.vertical, metrics.size(1))
                     .padding(.horizontal, metrics.size(Self.contentInset))
-                UsageBarSection(usage: usage)
+                // Attributed only when a row on screen belongs to something else. These are one
+                // account's plan on one agent: two plans measured in different units do not add up to
+                // one bar, so the bars stay Claude's and say so rather than appearing to cover both.
+                UsageBarSection(
+                    usage: usage,
+                    attribution: layout.hasMultipleProviders ? Provider.claude.displayName : nil
+                )
                     .padding(.horizontal, metrics.size(Self.contentInset))
             }
         }
