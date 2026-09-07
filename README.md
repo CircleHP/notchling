@@ -5,7 +5,7 @@
 See what’s working, what’s finished, and what needs you — then click a session to jump back to it.
 
 <p align="center">
-  <img src="media/notchling.gif" width="700" alt="Notchling opens from the notch to show Claude Code sessions, a permission prompt, subagent progress, and plan usage">
+  <img src="media/notchling.gif" width="700" alt="Notchling drops open from the notch to show Claude Code and Codex sessions together, most urgent first: two waiting on permission prompts, one running a fan-out of subagents, each row naming its agent, with per-session context and each agent's plan usage along the bottom — then a Codex turn finishes and it tucks itself away">
 </p>
 
 <p align="center"><i>The panel opens when a session needs attention, then tucks itself away.</i></p>
@@ -41,6 +41,12 @@ Codex rows show less than Claude Code rows do, and the [setup guide](SETUP.md#co
 and why.
 
 Hover over the notch to see your sessions, click a row to return to work, and open the gear for settings.
+
+<p align="center">
+  <img src="media/settings.png" width="400" alt="The settings window: a section per agent it found, each showing whether its hooks are wired with a button to change that, a switch for that agent's plan-usage line, and for Codex a note that its hooks still have to be trusted with /hooks; below them, the optional daily update check and a button that collects logs">
+</p>
+
+<p align="center"><i>Everything can be wired, unwired and switched from here — one section per agent it finds.</i></p>
 
 See the [setup guide](SETUP.md) for other installation options, configuration, and troubleshooting.
 

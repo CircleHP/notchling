@@ -203,7 +203,7 @@ Checks fetch this project's public Homebrew tap to compare versions. No session 
 ## Reading the widget
 
 <p align="center">
-  <img src="media/panel.gif" width="560" alt="The expanded panel: six sessions sorted most urgent first — blocked on a permission prompt, a failed turn, three working and one finished — with a subagent subtree, coloured bars for sessions given a colour, a context meter and plan-usage bars">
+  <img src="media/panel.gif" width="560" alt="The expanded panel: four sessions across both agents, sorted most urgent first — two Codex rows working, a Claude row waiting on a permission prompt, and a Claude row running two subagents shown as a subtree beneath it — each row headed by its agent's mark, with coloured bars for the sessions given a colour, a context meter per row, and a plan-usage line per agent along the bottom">
 </p>
 
 The mascot is present in every state, and the state changes its **face** and **colour**:
