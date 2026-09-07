@@ -1373,6 +1373,133 @@ private func settle(
     return condition()
 }
 
+/// Codex runs tools concurrently — two `PreToolUse` in the same second with different call ids, then two
+/// completions. Every rule here is one the singular "current tool" model gets wrong.
+@Suite("SessionStore — concurrent tool calls")
+@MainActor
+struct ConcurrentCallTests {
+    private let a = "exec-b9182e4c"
+    private let b = "exec-8bd3748c"
+    private let t = Date(timeIntervalSince1970: 1_000_000)
+
+    private func working() -> SessionStore {
+        let store = SessionStore()
+        store.apply(codexEvent("UserPromptSubmit", at: t))
+        return store
+    }
+
+    private func session(_ store: SessionStore) -> Session? {
+        store.session(key: SessionKey(provider: .codex, id: "cx1"))
+    }
+
+    /// The visible failure: one call completing blanked the row while the other was still running.
+    @Test("a call finishing hands the row to the one still running")
+    func completionDoesNotBlankABusyRow() {
+        let store = working()
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Bash", "toolUseId": a, "toolSummary": "gh issue list"]))
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Read", "toolUseId": b, "toolSummary": "Session.swift"]))
+
+        store.apply(codexEvent("PostToolUse", at: t + 2, ["toolName": "Bash", "toolUseId": a]))
+
+        #expect(session(store)?.currentTool == "Read", "the other call is still in flight")
+        #expect(session(store)?.currentToolSummary == "Session.swift")
+        #expect(session(store)?.state == .working)
+
+        store.apply(codexEvent("PostToolUse", at: t + 3, ["toolName": "Read", "toolUseId": b]))
+        #expect(session(store)?.currentTool == nil, "and now nothing is running")
+    }
+
+    /// The quiet failure: with the next start taken as the last call's end, a tool's history filled up
+    /// with the interval between two unrelated calls, and the adaptive stall threshold followed it.
+    @Test("each call is timed against itself, not against the next one to start")
+    func durationsAreNotCrossAttributed() {
+        let store = working()
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Bash", "toolUseId": a]))
+        // Starts one second later and finishes long after: nothing about it bears on Bash.
+        store.apply(codexEvent("PreToolUse", at: t + 2, ["toolName": "Read", "toolUseId": b]))
+        store.apply(codexEvent("PostToolUse", at: t + 4, ["toolName": "Bash", "toolUseId": a]))
+        store.apply(codexEvent("PostToolUse", at: t + 60, ["toolName": "Read", "toolUseId": b]))
+
+        let durations = try! #require(session(store)?.toolDurations)
+        #expect(durations.longestSeen(for: "Bash") == 3, "started at +1, finished at +4")
+        #expect(durations.longestSeen(for: "Read") == 58, "started at +2, finished at +60")
+    }
+
+    /// Answering a permission prompt produces no event at all, so a completion is the only thing that
+    /// can say the human is done. Without it a Codex row would sit on `needsYou` for the rest of its life.
+    @Test("a completion is what releases attention")
+    func completionReleasesNeedsYou() {
+        let store = working()
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Bash", "toolUseId": a]))
+        store.apply(codexEvent("Notification", at: t + 2, [
+            "notificationType": "permission_prompt", "message": "Allow read-only GitHub access?",
+        ]))
+        #expect(session(store)?.state == .needsYou)
+        #expect(session(store)?.needsYouMessage == "Allow read-only GitHub access?")
+
+        store.apply(codexEvent("PostToolUse", at: t + 20, ["toolName": "Bash", "toolUseId": a]))
+
+        #expect(session(store)?.state == .working)
+        #expect(session(store)?.needsYouMessage == nil)
+    }
+
+    /// Eighteen seconds of it was a person reading a prompt, which says nothing about the tool.
+    @Test("time spent waiting on a human is not recorded as the tool's")
+    func blockedCallsAreNotTimed() {
+        let store = working()
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Bash", "toolUseId": a]))
+        store.apply(codexEvent("Notification", at: t + 2, ["notificationType": "permission_prompt"]))
+        store.apply(codexEvent("PostToolUse", at: t + 20, ["toolName": "Bash", "toolUseId": a]))
+
+        #expect(session(store)?.toolDurations.longestSeen(for: "Bash") == nil)
+    }
+
+    /// A completion arriving after the turn ended says nothing about whether the turn ended.
+    @Test("a late completion does not revive a finished turn")
+    func lateCompletionDoesNotRevive() {
+        let store = working()
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Bash", "toolUseId": a]))
+        store.apply(codexEvent("Stop", at: t + 2, ["lastMessage": "done"]))
+        #expect(session(store)?.state == .done)
+
+        store.apply(codexEvent("PostToolUse", at: t + 3, ["toolName": "Bash", "toolUseId": a]))
+        #expect(session(store)?.state == .done)
+    }
+
+    /// A child's completion is the child's. Left to fall through to the session's own handling it would
+    /// close one of the parent's calls, and the parent's row would name whatever was left.
+    @Test("a child's completion does not close the parent's call")
+    func childCompletionStaysWithTheChild() {
+        let store = working()
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Bash", "toolUseId": a]))
+        store.apply(codexEvent("SubagentStart", at: t + 2, ["agentId": "ag1", "agentType": "explore"]))
+        store.apply(codexEvent("PreToolUse", at: t + 3, [
+            "agentId": "ag1", "toolName": "Grep", "toolUseId": b,
+        ]))
+        store.apply(codexEvent("PostToolUse", at: t + 4, ["agentId": "ag1", "toolName": "Grep", "toolUseId": b]))
+
+        #expect(session(store)?.currentTool == "Bash", "the parent's own call is untouched")
+        #expect(session(store)?.agents["ag1"]?.currentTool == nil, "and the child's is closed")
+        #expect(session(store)?.toolDurations.longestSeen(for: "Grep") == nil,
+                "a child's timing is never the session's")
+    }
+
+    /// Claude Code registers no completion event, so its calls must still be closed by inference — an
+    /// id in the payload must not switch it onto a path where nothing ever closes them.
+    @Test("an agent that reports no completions still closes its calls")
+    func claudeKeepsInferring() {
+        let store = SessionStore()
+        store.apply(hookEvent("UserPromptSubmit", at: t))
+        store.apply(hookEvent("PreToolUse", at: t + 1, ["toolName": "Bash", "toolUseId": a]))
+        store.apply(hookEvent("PreToolUse", at: t + 5, ["toolName": "Read", "toolUseId": b]))
+
+        let session = store.session(key: SessionKey(provider: .claude, id: "s1"))
+        #expect(session?.activeCalls.isEmpty == true, "not tracked by id at all")
+        #expect(session?.currentTool == "Read")
+        #expect(session?.toolDurations.longestSeen(for: "Bash") == 4, "closed by the next call starting")
+    }
+}
+
 /// The same, for a session with no registry to re-scan: something still has to keep poking the store so
 /// the reader's hop has somewhere to land.
 @MainActor

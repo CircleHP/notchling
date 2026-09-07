@@ -75,6 +75,8 @@ struct Session: Identifiable, Equatable, ToolTracking {
     /// Set when the current tool sat behind a permission prompt. Its elapsed time then includes however
     /// long a human took to answer, which is not a fact about the tool, so it is not recorded.
     var currentToolWasBlocked = false
+    /// See `ActiveCall`. Populated only for an agent that reports a tool finishing.
+    var activeCalls: [String: ActiveCall] = [:]
     var turnStartedAt: Date?
     var lastMessage: String?
     var needsYouMessage: String?

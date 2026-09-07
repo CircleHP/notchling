@@ -223,6 +223,7 @@ final class SessionStore {
                 session.agents.removeAll()
                 session.toolCounts = [:]
                 session.currentTool = nil
+                session.activeCalls.removeAll()
                 session.needsYouMessage = nil
 
             case "UserPromptSubmit":
@@ -233,6 +234,7 @@ final class SessionStore {
                 session.toolCounts = [:]
                 session.currentTool = nil
                 session.currentToolSummary = nil
+                session.activeCalls.removeAll()
                 session.needsYouMessage = nil
                 session.lastMessage = nil
                 session.lastPrompt = event.userInput
@@ -246,18 +248,27 @@ final class SessionStore {
                 newState = .working
                 session.needsYouMessage = nil
                 session.lastToolFailure = nil
-                // A new tool starting is proof the previous one finished, which is the only completion signal
-                // there is — `PostToolUse` stays unregistered because its payload can be megabytes.
-                session.recordCurrentToolDuration(endingAt: event.date)
+                beginTool(event, provider: key.provider, on: &session)
                 session.lastProgressAt = event.date
                 session.isStalled = false
                 if let promptID = event.promptId { session.currentPromptID = promptID }
-                if let tool = event.toolName {
-                    session.currentTool = tool
-                    session.currentToolSummary = event.toolSummary
-                    session.toolCounts[tool, default: 0] += 1
-                }
                 if session.turnStartedAt == nil { session.turnStartedAt = event.date }
+
+            // Registered only for an agent that reports completions. It closes the call it names and,
+            // just as load-bearing, it is the only thing that can release attention: a permission
+            // prompt being answered produces no event of its own, so the next thing heard about a
+            // blocked session is the call finishing.
+            //
+            // It cannot revive a finished turn. Only a session actually waiting goes back to working —
+            // a completion arriving after `Stop` says nothing about whether the turn is over.
+            case "PostToolUse":
+                if session.state == .needsYou {
+                    newState = .working
+                    session.needsYouMessage = nil
+                }
+                endTool(event, on: &session)
+                session.lastProgressAt = event.date
+                session.isStalled = false
 
             case "Notification":
                 newState = Self.state(forNotification: event, current: session.state)
@@ -265,6 +276,7 @@ final class SessionStore {
                     session.needsYouMessage = event.message
                     // Whatever this tool's elapsed time ends up being, it now includes a human deciding.
                     session.currentToolWasBlocked = true
+                    session.markActiveCallsBlocked()
                 }
 
             case "Stop":
@@ -275,6 +287,9 @@ final class SessionStore {
                 session.agents.removeAll()
                 session.lastFinishedAt = event.date
                 session.recordCurrentToolDuration(endingAt: event.date)
+                // A call still open when the turn ended has no end anyone reported, so it is dropped
+                // rather than credited with the time up to here.
+                session.activeCalls.removeAll()
                 session.lastProgressAt = nil
                 session.lastMessage = event.lastMessage
                 session.currentTool = nil
@@ -357,16 +372,18 @@ final class SessionStore {
 
         case "PreToolUse":
             agent.state = .working
-            // Same completion signal the session uses: the next tool starting proves the last one
-            // finished. Recorded against this agent's history, never its session's.
-            agent.recordCurrentToolDuration(endingAt: event.date)
+            // Recorded against this agent's history, never its session's.
+            beginTool(event, provider: session.provider, on: &agent)
             recordProgress()
-            if let tool = event.toolName {
-                agent.currentTool = tool
-                agent.currentToolSummary = event.toolSummary
-                agent.toolCounts[tool, default: 0] += 1
-            }
             sessionState = .working
+
+        // Consumed here rather than left to fall through: handled as the session's own, it would close
+        // one of the parent's calls on a child's completion, and the parent's row would name whatever
+        // was left.
+        case "PostToolUse":
+            agent.state = .working
+            endTool(event, on: &agent)
+            recordProgress()
 
         case "Notification":
             if Self.state(forNotification: event, current: agent.state) == .needsYou {
@@ -376,10 +393,12 @@ final class SessionStore {
                 // message can be read.
                 session.needsYouMessage = event.message
                 session.currentToolWasBlocked = true
+                agent.markActiveCallsBlocked()
             }
 
         case "SubagentStop":
             agent.recordCurrentToolDuration(endingAt: event.date)
+            agent.activeCalls.removeAll()
             agent.state = .done
             agent.finishedAt = event.date
             agent.currentTool = nil
@@ -422,6 +441,36 @@ final class SessionStore {
         }
 
         return true
+    }
+
+    /// Record a tool call starting, by whichever route this agent affords.
+    ///
+    /// Where the agent reports completions the call is tracked under its own id and closed by its own
+    /// event. Where it does not, the next call starting is the only proof the last one finished — which
+    /// is an inference, and one that would be wrong for an agent running two tools at once, because it
+    /// credits the first tool's time to the moment the second began.
+    private func beginTool<Tracker: ToolTracking>(
+        _ event: HookEvent,
+        provider: Provider,
+        on tracker: inout Tracker
+    ) {
+        guard let tool = event.toolName else { return }
+        tracker.toolCounts[tool, default: 0] += 1
+
+        if provider.capabilities.hasToolCompletionEvents, let id = event.toolUseId {
+            tracker.beginCall(id: id, tool: tool, summary: event.toolSummary, at: event.date)
+            return
+        }
+
+        tracker.recordCurrentToolDuration(endingAt: event.date)
+        tracker.currentTool = tool
+        tracker.currentToolSummary = event.toolSummary
+    }
+
+    /// Close the call a completion event names, and nothing else.
+    private func endTool<Tracker: ToolTracking>(_ event: HookEvent, on tracker: inout Tracker) {
+        guard let id = event.toolUseId else { return }
+        tracker.endCall(id: id, at: event.date)
     }
 
     /// `Notification` is the only hook event whose meaning depends on a second field. Keeping that decision

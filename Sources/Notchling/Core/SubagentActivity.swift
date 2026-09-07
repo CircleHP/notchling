@@ -36,6 +36,8 @@ struct SubagentActivity: Identifiable, Equatable, ToolTracking {
     var toolDurations = ToolDurations()
     var lastProgressAt: Date?
     var currentToolWasBlocked = false
+    /// See `ActiveCall`. Populated only for an agent that reports a tool finishing.
+    var activeCalls: [String: ActiveCall] = [:]
 
     /// From `SubagentStop`'s `last_assistant_message` — what this agent concluded, which is the whole
     /// reason a finished child is worth keeping on screen at all.

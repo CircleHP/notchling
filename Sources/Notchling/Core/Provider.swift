@@ -14,8 +14,16 @@ enum Provider: String, Codable, Sendable {
 
     var capabilities: Capabilities {
         switch self {
-        case .claude: Capabilities(hasTranscriptMarks: true, hasStatusLineMetrics: true)
-        case .codex: Capabilities(hasTranscriptMarks: false, hasStatusLineMetrics: false)
+        case .claude: Capabilities(
+                hasTranscriptMarks: true,
+                hasStatusLineMetrics: true,
+                hasToolCompletionEvents: false
+            )
+        case .codex: Capabilities(
+                hasTranscriptMarks: false,
+                hasStatusLineMetrics: false,
+                hasToolCompletionEvents: true
+            )
         }
     }
 }
@@ -34,6 +42,14 @@ struct Capabilities: Equatable, Sendable {
     /// A status line, installed by this widget, reporting context fill and cost per session. Claude
     /// Code has one slot for it; nothing else does.
     var hasStatusLineMetrics: Bool
+
+    /// An event when a tool call finishes, identifying which call it was.
+    ///
+    /// Not registered for Claude Code, whose payload carries the tool's whole output; there, a call
+    /// finishing is inferred from the next one starting. Where it *is* registered the inference is not
+    /// needed and would be wrong, because the agent runs tools concurrently — two calls open at once
+    /// makes "the next start ends the last call" attribute one tool's time to another.
+    var hasToolCompletionEvents: Bool
 }
 
 /// How a session is identified everywhere it is used as a key.

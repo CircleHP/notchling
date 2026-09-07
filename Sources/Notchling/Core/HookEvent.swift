@@ -30,6 +30,9 @@ struct HookEvent: Decodable {
     var notificationType: String?
     var message: String?
     var toolName: String?
+    /// The agent's own id for one tool call, where it gives them ids. What tells two concurrent calls
+    /// apart, and what a completion event names.
+    var toolUseId: String?
     var toolSummary: String?
     var lastMessage: String?
     var userInput: String?

@@ -6,9 +6,11 @@
 //  and a wedged session the same signal, and the threshold had to be set high enough for the slowest
 //  legitimate tool — so a `Read` that never returned went unreported for ten minutes.
 //
-//  Durations come free from the event stream. `PostToolUse` is deliberately not registered (its payload
-//  carries `tool_output`, which can be megabytes), but a `PreToolUse` for the next tool proves the
-//  previous one finished, and `Stop` closes the last one.
+//  Where an agent reports a tool finishing, a call is tracked by the id the agent gave it and closed on
+//  its own event, because an agent that runs two tools at once has two of them in flight. Where it does
+//  not — Claude Code, whose `PostToolUse` is deliberately unregistered because its payload carries
+//  `tool_output` and can be megabytes — a `PreToolUse` for the next tool is taken as proof the previous
+//  one finished, and `Stop` closes the last one.
 //
 
 import Foundation
@@ -50,6 +52,19 @@ struct ToolDurations: Equatable {
     }
 }
 
+/// One tool call that has started and has not been reported finished.
+///
+/// Keyed by the id the agent gave the call, because that is the only thing that survives two of them
+/// running at once — a name does not, and neither does "the latest one".
+struct ActiveCall: Equatable {
+    var tool: String
+    var summary: String?
+    var startedAt: Date
+    /// Set when a human was deciding while this call was in flight. Its elapsed time then measures the
+    /// person, not the tool, so it is discarded rather than recorded.
+    var wasBlocked = false
+}
+
 /// The bookkeeping that turns a stream of "a tool started" events into per-tool durations.
 ///
 /// Shared by `Session` and `SubagentActivity` because both track tools independently — and because the
@@ -57,10 +72,14 @@ struct ToolDurations: Equatable {
 /// copies of it would eventually disagree.
 protocol ToolTracking {
     var currentTool: String? { get set }
+    var currentToolSummary: String? { get set }
     var lastProgressAt: Date? { get set }
     var currentToolWasBlocked: Bool { get set }
     var toolDurations: ToolDurations { get set }
     var toolCounts: [String: Int] { get set }
+    /// Calls started and not yet reported finished, by the agent's own id for each. Empty throughout
+    /// for an agent that reports no completions.
+    var activeCalls: [String: ActiveCall] { get set }
 }
 
 extension ToolTracking {
@@ -71,6 +90,42 @@ extension ToolTracking {
             return
         }
         toolDurations.record(end.timeIntervalSince(startedAt), for: tool)
+    }
+
+    /// Start a call the agent has identified, and let it name the row.
+    mutating func beginCall(id: String, tool: String, summary: String?, at date: Date) {
+        activeCalls[id] = ActiveCall(tool: tool, summary: summary, startedAt: date)
+        currentTool = tool
+        currentToolSummary = summary
+    }
+
+    /// Close the call the agent says finished, and hand the row to whatever is still running.
+    ///
+    /// Only this call: a second one may well still be in flight, and clearing the row on the first
+    /// completion would blank a session that is still busy.
+    mutating func endCall(id: String, at date: Date) {
+        guard let call = activeCalls.removeValue(forKey: id) else { return }
+        if !call.wasBlocked {
+            toolDurations.record(date.timeIntervalSince(call.startedAt), for: call.tool)
+        }
+        nameRowFromActiveCalls()
+    }
+
+    /// A human is deciding, so every call in flight is now being timed against them rather than
+    /// against itself.
+    ///
+    /// All of them, because the event that says so carries no call id — there is no way to tell which
+    /// call the prompt belongs to. Discarding a good sample costs a data point; keeping an inflated one
+    /// raises the stall threshold and suppresses the alert it exists to raise.
+    mutating func markActiveCallsBlocked() {
+        for id in activeCalls.keys { activeCalls[id]?.wasBlocked = true }
+    }
+
+    /// Give the row the call that started most recently, or nothing if none is left.
+    mutating func nameRowFromActiveCalls() {
+        let latest = activeCalls.values.max { $0.startedAt < $1.startedAt }
+        currentTool = latest?.tool
+        currentToolSummary = latest?.summary
     }
 
     /// What the running tool usually manages, when we have seen it finish before.
