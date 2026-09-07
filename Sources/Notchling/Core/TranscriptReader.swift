@@ -49,10 +49,10 @@ final class TranscriptReader {
     nonisolated static let maxLineLength = 64 * 1024
 
     private let queue = DispatchQueue(label: "local.notchling.transcript", qos: .utility)
-    private var inFlight: Set<String> = []
+    private var inFlight: Set<SessionKey> = []
     /// Modification date of the last transcript read, per session. Transcripts grow constantly, so
     /// re-reading an unchanged one is pure waste.
-    private var lastModified: [String: Date] = [:]
+    private var lastModified: [SessionKey: Date] = [:]
     /// What the last read found, and where the file ended when it found it.
     ///
     /// Without this every session missing any one mark re-reads the whole tail on every change: the
@@ -60,7 +60,7 @@ final class TranscriptReader {
     /// never found and the search runs to its limit. Transcripts change on every message, so that is
     /// a few megabytes parsed every couple of seconds, for an answer that cannot have changed except
     /// in the bytes appended since.
-    private var progress: [String: TranscriptScan] = [:]
+    private var progress: [SessionKey: TranscriptScan] = [:]
 
     /// Where Claude Code keeps a session's transcript when the hook payload did not name it: the cwd
     /// with every `/` turned into `-`, under `~/.claude/projects`.
@@ -79,21 +79,21 @@ final class TranscriptReader {
     /// The callback is `@MainActor` because that is where it runs, and `@Sendable` because it
     /// travels through the queue to get there — the two together are what say "handed over, then
     /// called at home" rather than "called wherever it lands".
-    func read(sessionID: String, path: String, completion: @escaping @MainActor @Sendable (TranscriptMarks) -> Void) {
-        guard !inFlight.contains(sessionID) else { return }
+    func read(key: SessionKey, path: String, completion: @escaping @MainActor @Sendable (TranscriptMarks) -> Void) {
+        guard !inFlight.contains(key) else { return }
         let attributes = try? FileManager.default.attributesOfItem(atPath: path)
         guard let modified = attributes?[.modificationDate] as? Date else { return }
-        guard lastModified[sessionID] != modified else { return }
+        guard lastModified[key] != modified else { return }
 
-        inFlight.insert(sessionID)
-        let previous = progress[sessionID]
+        inFlight.insert(key)
+        let previous = progress[key]
         queue.async {
             let scan = Self.scan(fileAt: path, after: previous)
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.inFlight.remove(sessionID)
-                self.lastModified[sessionID] = modified
-                self.progress[sessionID] = scan
+                self.inFlight.remove(key)
+                self.lastModified[key] = modified
+                self.progress[key] = scan
                 guard !scan.marks.isEmpty, scan.marks != previous?.marks else { return }
                 completion(scan.marks)
             }
@@ -101,10 +101,10 @@ final class TranscriptReader {
     }
 
     /// Forget a session, so a transcript that is written again is read again.
-    func forget(sessionID: String) {
-        lastModified.removeValue(forKey: sessionID)
-        progress.removeValue(forKey: sessionID)
-        inFlight.remove(sessionID)
+    func forget(key: SessionKey) {
+        lastModified.removeValue(forKey: key)
+        progress.removeValue(forKey: key)
+        inFlight.remove(key)
     }
 
     // MARK: - Reading

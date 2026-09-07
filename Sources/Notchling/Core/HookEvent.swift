@@ -40,6 +40,13 @@ struct HookEvent: Decodable {
 
     var date: Date { Date(timeIntervalSince1970: ts) }
 
+    /// Which agent wrote this event. A v1 spool event carries no provider because the hook that wrote
+    /// it knew about no other — so this is what its absence means, not a guess.
+    var provider: Provider { .claude }
+
+    /// How the session this event describes is keyed in the store. See `SessionKey`.
+    var sessionKey: SessionKey { SessionKey(provider: provider, id: sessionId) }
+
     /// True when the event came from inside a subagent rather than the top-level session.
     var isSubagent: Bool { agentId != nil }
 }

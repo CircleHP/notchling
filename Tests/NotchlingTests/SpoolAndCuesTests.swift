@@ -255,7 +255,7 @@ struct SoundCuesTests {
         let cues = SoundCues { played.append($0) }
 
         cues.play(for: session(), newState: .needsYou)
-        cues.clearDedupe(for: "s")
+        cues.clearDedupe(for: SessionKey(provider: .claude, id: "s"))
         cues.play(for: session(), newState: .needsYou)
         #expect(played == ["Submarine", "Submarine"])
     }

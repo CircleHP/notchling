@@ -1174,8 +1174,10 @@ struct PanelLayoutTests {
     @Test("a working session's agents follow it, indented")
     func agentsFollowTheirSession() {
         let layout = PanelLayout(sessions: [withAgents(3)])
-        #expect(layout.rows.map(\.id) == ["s:fan", "a:fan:a0", "a:fan:a1", "a:fan:a2"])
-        #expect(layout.rows.allSatisfy { $0.sessionID == "fan" })
+        #expect(layout.rows.map(\.id) == [
+            "s:claude:fan", "a:claude:fan:a0", "a:claude:fan:a1", "a:claude:fan:a2",
+        ])
+        #expect(layout.rows.allSatisfy { $0.sessionKey.id == "fan" })
     }
 
     /// The tree glyph closes the block, so the last agent has to be identifiable as last.
@@ -1197,7 +1199,7 @@ struct PanelLayoutTests {
         other.state = .needsYou
         let layout = PanelLayout(sessions: [fan, other], limit: 4)
 
-        #expect(layout.rows.filter(\.isSession).map(\.sessionID) == ["fan", "other"])
+        #expect(layout.rows.filter(\.isSession).map(\.sessionKey.id) == ["fan", "other"])
         #expect(layout.rows.count <= 4)
     }
 
@@ -1207,7 +1209,7 @@ struct PanelLayoutTests {
     func agentOverflow() {
         let layout = PanelLayout(sessions: [withAgents(9)], limit: 10, agentLimit: 4)
         #expect(layout.rows.count == 5, "one session plus its four-row allowance")
-        #expect(layout.rows.last == .agentOverflow(sessionID: "fan", count: 6),
+        #expect(layout.rows.last == .agentOverflow(sessionKey: SessionKey(provider: .claude, id: "fan"), count: 6),
                 "three agents shown, six accounted for")
     }
 

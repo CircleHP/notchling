@@ -74,14 +74,14 @@ final class SessionStore {
     /// Fired when a session leaves the store, so state held elsewhere and keyed by it can go too.
     var onRemoved: ((Session) -> Void)?
 
-    private var index: [String: Session] = [:]
+    private var index: [SessionKey: Session] = [:]
 
     private let processEnvironment = ProcessEnvironmentReader()
 
     private let transcripts = TranscriptReader()
 
     /// pids already looked up, so a session with genuinely no terminal identity is not re-probed on
-    /// every sweep. Purged by `remove(id:)`: a pid that outlives its session blocks identity
+    /// every sweep. Purged by `remove(key:)`: a pid that outlives its session blocks identity
     /// resolution for whatever process macOS gives that number to next.
     private(set) var resolvedPIDs: Set<Int32> = []
 
@@ -107,20 +107,20 @@ final class SessionStore {
     /// silently refused a terminal-identity probe: no tty, no focus URL, and a click that falls back
     /// to activating the app instead of jumping to the tab.
     @discardableResult
-    private func remove(id: String) -> Session? {
-        guard let session = index.removeValue(forKey: id) else { return nil }
+    private func remove(key: SessionKey) -> Session? {
+        guard let session = index.removeValue(forKey: key) else { return nil }
         if let pid = session.pid {
             resolvedPIDs.remove(pid)
             processEnvironment.forget(pid: pid)
         }
-        transcripts.forget(sessionID: id)
+        transcripts.forget(key: key)
         onRemoved?(session)
         return session
     }
 
-    /// Current state of one session by id. The panel freezes which rows it draws when it opens but keeps
+    /// Current state of one session. The panel freezes which rows it draws when it opens but keeps
     /// their *contents* live, and this is how a frozen row finds itself again.
-    func session(id: String) -> Session? { index[id] }
+    func session(key: SessionKey) -> Session? { index[key] }
 
     // MARK: - Aggregates
 
@@ -153,7 +153,8 @@ final class SessionStore {
     // MARK: - Hook events
 
     func apply(_ event: HookEvent) {
-        var session = index[event.sessionId] ?? Session(sessionID: event.sessionId)
+        let key = event.sessionKey
+        var session = index[key] ?? Session(sessionID: event.sessionId, provider: event.provider)
         let previous = session.state
 
         if let pid = event.pid { session.pid = pid }
@@ -266,7 +267,7 @@ final class SessionStore {
                 session.isStalled = false
 
             case "SessionEnd":
-                remove(id: event.sessionId)
+                remove(key: key)
                 rebuild()
                 return
 
@@ -279,10 +280,10 @@ final class SessionStore {
             setState(newState, on: &session, evidenceAt: event.date)
         }
 
-        index[event.sessionId] = session
+        index[key] = session
         rebuild()
         notifyTransition(from: previous, session: session)
-        readTranscriptMarks(for: event.sessionId)
+        readTranscriptMarks(for: key)
     }
 
     /// Apply an event that came from inside a subagent, and report whether it was one of those at all.
@@ -425,10 +426,12 @@ final class SessionStore {
     // MARK: - Registry
 
     func apply(registry entries: [RegistryEntry]) {
-        let seen = Set(entries.map(\.sessionId))
+        // The registry is Claude Code's own, so everything it describes is a Claude session.
+        let keys = entries.map { SessionKey(provider: .claude, id: $0.sessionId) }
+        let seen = Set(keys)
 
-        for entry in entries {
-            var session = index[entry.sessionId] ?? Session(sessionID: entry.sessionId)
+        for (entry, key) in zip(entries, keys) {
+            var session = index[key] ?? Session(sessionID: entry.sessionId, provider: .claude)
             let previous = session.state
 
             session.pid = entry.pid
@@ -482,7 +485,7 @@ final class SessionStore {
                 }
             }
 
-            index[entry.sessionId] = session
+            index[key] = session
 
             // Not just for registry-discovered sessions: a hook event from a terminal that publishes
             // no focus URL leaves us with no tty either, and the tty is what the iTerm/Terminal
@@ -491,10 +494,10 @@ final class SessionStore {
                !resolvedPIDs.contains(pid)
             {
                 resolvedPIDs.insert(pid)
-                resolveTerminalIdentity(for: entry.sessionId, pid: pid)
+                resolveTerminalIdentity(for: key, pid: pid)
             }
 
-            readTranscriptMarks(for: entry.sessionId)
+            readTranscriptMarks(for: key)
 
             notifyTransition(from: previous, session: session)
         }
@@ -504,22 +507,22 @@ final class SessionStore {
         // dropping the session then makes it flicker. After the grace period it is gone even if its
         // pid looks alive, because a pid can be recycled.
         let stamp = now()
-        for (id, var session) in index where !seen.contains(id) {
+        for (key, var session) in index where !seen.contains(key) {
             // A pid we have and cannot find is proof the session is gone. No pid at all is not: the
             // hook resolves it from `CLAUDE_PID` or a walk up the parent chain, and both come up
             // empty often enough. Reading that as death removed the grace period from the one case
             // it was written for — hook events arriving before the registry file exists.
             if let pid = session.pid, !ProcessLiveness.isAlive(pid) {
-                remove(id: id)
+                remove(key: key)
                 continue
             }
             if let since = session.missingFromRegistrySince {
                 if stamp.timeIntervalSince(since) > Self.registryGrace {
-                    remove(id: id)
+                    remove(key: key)
                 }
             } else {
                 session.missingFromRegistrySince = stamp
-                index[id] = session
+                index[key] = session
             }
         }
 
@@ -529,32 +532,32 @@ final class SessionStore {
     /// The title Claude derives and the colour a user sets live only in the session's transcript, so
     /// they have to be read rather than received. Cheap in practice: the reader does nothing unless
     /// the file changed since it last looked, and it reads backwards from the end.
-    private func readTranscriptMarks(for sessionID: String) {
-        guard let session = index[sessionID] else { return }
+    private func readTranscriptMarks(for key: SessionKey) {
+        guard let session = index[key] else { return }
         let path = session.transcriptPath
-            ?? session.cwd.flatMap { TranscriptReader.path(forSession: sessionID, cwd: $0) }
+            ?? session.cwd.flatMap { TranscriptReader.path(forSession: key.id, cwd: $0) }
         guard let path else { return }
 
-        transcripts.read(sessionID: sessionID, path: path) { [weak self] marks in
-            guard let self, var session = self.index[sessionID] else { return }
+        transcripts.read(key: key, path: path) { [weak self] marks in
+            guard let self, var session = self.index[key] else { return }
             if let custom = marks.customTitle { session.customTitle = custom }
             if let title = marks.title { session.aiTitle = title }
             if let colour = marks.colorName { session.colorName = colour }
-            self.index[sessionID] = session
+            self.index[key] = session
             self.rebuild()
         }
     }
 
-    private func resolveTerminalIdentity(for sessionID: String, pid: Int32) {
+    private func resolveTerminalIdentity(for key: SessionKey, pid: Int32) {
         processEnvironment.read(pid: pid) { [weak self] identity in
-            guard let self, var session = self.index[sessionID] else { return }
+            guard let self, var session = self.index[key] else { return }
             if session.focusURL == nil { session.focusURL = identity.focusURL }
             if session.warpSessionID == nil { session.warpSessionID = identity.warpSessionID }
             if session.termProgram == nil { session.termProgram = identity.termProgram }
             if session.hostBundleID == nil { session.hostBundleID = identity.hostBundleID }
             if session.tty == nil { session.tty = identity.tty }
             if session.processCommand == nil { session.processCommand = identity.command }
-            self.index[sessionID] = session
+            self.index[key] = session
             self.rebuild()
         }
     }
@@ -576,10 +579,11 @@ final class SessionStore {
         var changed = false
         let stamp = now()
 
-        for (id, var session) in index {
-            if session.metrics != metrics[id] {
-                session.metrics = metrics[id]
-                index[id] = session
+        for (key, var session) in index {
+            // The status line writes one file per session id, and it is Claude Code's status line.
+            if session.metrics != metrics[session.sessionID] {
+                session.metrics = metrics[session.sessionID]
+                index[key] = session
                 changed = true
             }
 
@@ -587,7 +591,7 @@ final class SessionStore {
             let stalled = (session.stalledFor(now: stamp) ?? 0) > threshold
             if stalled != session.isStalled {
                 session.isStalled = stalled
-                index[id] = session
+                index[key] = session
                 changed = true
                 if stalled { onStalled?(session) }
             }
@@ -600,17 +604,17 @@ final class SessionStore {
             }
             if !expired.isEmpty {
                 for agentID in expired.keys { session.agents.removeValue(forKey: agentID) }
-                index[id] = session
+                index[key] = session
                 changed = true
             }
 
             if session.state == .done, stamp.timeIntervalSince(session.stateChangedAt) > Self.doneDecay {
                 setState(.idle, on: &session, evidenceAt: stamp)
-                index[id] = session
+                index[key] = session
                 changed = true
             }
             if let pid = session.pid, !ProcessLiveness.isAlive(pid) {
-                remove(id: id)
+                remove(key: key)
                 changed = true
             }
         }

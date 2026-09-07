@@ -35,11 +35,16 @@ enum SessionKind: String, Codable, Sendable {
     case bg
 }
 
-/// One Claude Code session, merged from the registry at `~/.claude/sessions/<pid>.json` and our
-/// hook event spool.
+/// One agent session in a terminal, merged from whatever sources its provider has — for Claude Code the
+/// registry at `~/.claude/sessions/<pid>.json` and our hook event spool.
 struct Session: Identifiable, Equatable, ToolTracking {
     let sessionID: String
-    var id: String { sessionID }
+    /// Which agent CLI this session belongs to. Fixed at creation: a session does not change agent.
+    let provider: Provider
+
+    /// How this session is keyed everywhere it is stored. See `SessionKey`.
+    var key: SessionKey { SessionKey(provider: provider, id: sessionID) }
+    var id: SessionKey { key }
 
     var pid: Int32?
     var name: String?
@@ -117,8 +122,11 @@ struct Session: Identifiable, Equatable, ToolTracking {
     /// busy. Used only to break a stuck `needsYou`.
     var registryIdleSince: Date?
 
-    init(sessionID: String) {
+    /// `provider` defaults to Claude Code because that is what its absence *means* rather than as a
+    /// convenience: a spool event carrying no provider was written by a hook that knew about no other.
+    init(sessionID: String, provider: Provider = .claude) {
         self.sessionID = sessionID
+        self.provider = provider
     }
 
     /// A name someone chose beats one anything derived, and `notchling-1a` identifies nothing when

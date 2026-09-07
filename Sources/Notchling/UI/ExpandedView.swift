@@ -135,14 +135,14 @@ struct ExpandedView: View {
     private func view(for row: PanelRow, at index: Int) -> some View {
         switch row {
         case let .session(captured):
-            SessionRow(session: store.session(id: captured.sessionID) ?? captured, onFocus: actions.focus)
+            SessionRow(session: store.session(key: captured.key) ?? captured, onFocus: actions.focus)
 
-        case let .agent(sessionID, captured):
+        case let .agent(sessionKey, captured):
             AgentRow(
-                agent: store.session(id: sessionID)?.agents[captured.agentID] ?? captured,
+                agent: store.session(key: sessionKey)?.agents[captured.agentID] ?? captured,
                 isLast: layout.isLastInBlock(index),
                 onFocus: {
-                    guard let session = store.session(id: sessionID) else { return }
+                    guard let session = store.session(key: sessionKey) else { return }
                     actions.focus(session)
                 }
             )
