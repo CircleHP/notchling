@@ -209,12 +209,14 @@ private struct SessionMark: View {
     @Environment(\.widgetMetrics) private var metrics
 
     var body: some View {
-        // No halo on the states that want attention. It existed to keep them distinguishable without
-        // relying on colour, which the mark itself now does no better — but the row says `needs you`
-        // or `failed` in words on its right, and a waiting row carries a clock beside that. The ring
-        // was drawing a circle around a shape whose whole job is not being a circle.
+        // No halo on the states that want attention, and nothing else drawn around the mark. A row
+        // that wants something says `needs you` or `failed` in words on its right, with a clock
+        // beside that while it waits — and a ring around a shape whose whole job is not being a
+        // circle takes the shape back.
         PixelBitmapView(bitmap: ProviderArt.mark(for: provider), color: Theme.color(for: state))
-            .frame(width: metrics.size(9), height: metrics.size(9))
+            // Twelve rather than nine: the marks are fourteen pixels across, and at nine a cell lands
+            // on barely more than one device pixel — enough to blur a single-cell spoke away.
+            .frame(width: metrics.size(12), height: metrics.size(12))
     }
 }
 

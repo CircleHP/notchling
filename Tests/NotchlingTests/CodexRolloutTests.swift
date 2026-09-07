@@ -107,6 +107,27 @@ struct CodexRolloutTests {
         #expect(usage.fiveHour?.usedPercentage == 77)
     }
 
+    /// A turn's context is written before the token count that closes the turn, so reading backwards
+    /// during a turn in progress finds it first. Gated on the whole reading rather than on the field
+    /// wanted, that made the numbers unreadable for the entire duration of the turn somebody is
+    /// watching — and the row's meter was wiped rather than left stale.
+    @Test("a turn's context newer than the token count does not hide the numbers")
+    func turnContextDoesNotMaskTheTokenCount() {
+        let found = scan([Self.tokenCount, Self.turnContext])
+        #expect(found.metrics?.contextUsedPercent == 2)
+        #expect(found.metrics?.contextWindowSize == 258_400)
+        #expect(found.metrics?.effort == "high", "and the effort is still picked up")
+    }
+
+    /// Only a length cap and a substring got the line this far. A short record of another kind carrying
+    /// the same word and an `info` object would have been read as a reading.
+    @Test("a record that merely mentions the word is not read as one")
+    func decoyIsRefused() {
+        let decoy = #"{"timestamp":"2026-09-07T13:38:00.000Z","type":"event_msg","payload":{"type":"item_completed","note":"token_count","info":{"model_context_window":999,"last_token_usage":{"total_tokens":900}}}}"#
+        let found = scan([decoy])
+        #expect(found.isEmpty, "its type is not one of the two")
+    }
+
     @Test("a rollout with nothing in it yields nothing rather than zeroes")
     func emptyRollout() {
         #expect(scan([Self.conversation(20_000)]).isEmpty)
@@ -124,6 +145,77 @@ struct CodexRolloutTests {
         let found = scan([Self.turnContext, Self.tokenCount] + lines)
         #expect(found.metrics?.contextUsedPercent == 2)
         #expect(found.usage?.fiveHour?.usedPercentage == 77)
+    }
+
+    /// A rollout is read again on every event, and a scan is handed what the last one found. What the
+    /// row must not do is lose a percentage because the newest records happen not to carry one.
+    @Test("a scan that finds no percentage keeps the one before it")
+    func carriesThePercentageForward() throws {
+        let previous = CodexRolloutScan(rollout: scan([Self.tokenCount]), readTo: 0)
+        #expect(previous.rollout.metrics?.contextUsedPercent == 2)
+
+        // A turn in progress, with the token count that closes it out of reach: this record alone
+        // makes `metrics` non-nil carrying nothing but the effort, which is what a carry keyed on the
+        // reading rather than on the field then took for an answer.
+        let path = rollout([Self.turnContext])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let found = CodexRolloutReader.scan(fileAt: path, after: previous).rollout
+
+        #expect(found.metrics?.contextUsedPercent == 2, "still the last figure known, not nil")
+        #expect(found.metrics?.contextWindowSize == 258_400)
+        #expect(found.metrics?.effort == "high")
+        #expect(found.usage?.fiveHour?.usedPercentage == 77, "and the limits carry the same way")
+    }
+
+    /// A rollout grows on every message and is read again on every event. Everything below where the
+    /// last scan reached was already read, so only the appended bytes are looked at again.
+    @Test("only what has arrived since the last scan is read again")
+    func onlyNewBytesAreScanned() throws {
+        let path = rollout([Self.turnContext, Self.tokenCount])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let size = try #require(
+            try FileManager.default.attributesOfItem(atPath: path)[.size] as? Int
+        )
+
+        // A scan told the whole file was already read finds nothing new in it, and answers with what
+        // it was handed rather than walking it again.
+        let previous = CodexRolloutScan(rollout: CodexRollout(), readTo: UInt64(size))
+        #expect(CodexRolloutReader.scan(fileAt: path, after: previous).rollout.isEmpty)
+
+        // Told the file was shorter, it reads from there — and a chunk is taken back from the end, so
+        // a record straddling that point is still read whole.
+        let partial = CodexRolloutScan(rollout: CodexRollout(), readTo: UInt64(size - 20))
+        let found = CodexRolloutReader.scan(fileAt: path, after: partial).rollout
+        #expect(found.metrics?.contextUsedPercent == 2)
+        #expect(found.usage?.fiveHour?.usedPercentage == 77)
+    }
+
+    /// A rollout that shrank was replaced rather than appended to, and nothing known about it holds —
+    /// including a percentage that would otherwise be shown for a session it no longer describes.
+    @Test("a replaced rollout carries nothing forward")
+    func truncationDiscardsTheCarry() {
+        let previous = CodexRolloutScan(rollout: scan([Self.tokenCount]), readTo: 10_000_000)
+        let path = rollout([Self.turnContext])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let found = CodexRolloutReader.scan(fileAt: path, after: previous).rollout
+        #expect(found.metrics?.contextUsedPercent == nil)
+        #expect(found.usage == nil)
+    }
+
+    /// The carry is a fallback, never a preference: a fresh reading replaces it outright.
+    @Test("a newer percentage wins over the carried one")
+    func aFreshPercentageReplacesTheCarry() throws {
+        let previous = CodexRolloutScan(rollout: scan([Self.tokenCount]), readTo: 0)
+
+        let fuller = Self.tokenCount
+            .replacingOccurrences(of: "\"last_token_usage\":{\"input_tokens\":16491,\"total_tokens\":16902}",
+                                  with: "\"last_token_usage\":{\"input_tokens\":16491,\"total_tokens\":135102}")
+        let next = rollout([fuller])
+        defer { try? FileManager.default.removeItem(atPath: next) }
+
+        let found = CodexRolloutReader.scan(fileAt: next, after: previous).rollout
+        #expect(found.metrics?.contextUsedPercent == 50, "246,400 effective, 123,102 used")
     }
 
     /// Reading a megabyte to put a stale percentage on a row is not a trade worth making.

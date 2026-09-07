@@ -91,6 +91,12 @@ Appending rather than inserting matters more for Codex than it reads. Codex reco
 have trusted by their *position* in the file, so an entry put anywhere but the end renumbers the groups
 after it and quietly invalidates the decisions you already made about other tools' hooks.
 
+Removing them holds the same line. The hook entry comes out of the group it sits in, and the emptied
+group is deleted only when nothing sits behind it; where another tool's group does, an empty group is
+left in its place. Codex parses that and runs nothing from it, and every group behind it keeps the
+position its trust decision was recorded under. Re-pointing an entry that already names this copy of
+the hook rewrites it where it sits, for the same reason.
+
 The Homebrew formula itself never touches either file: a package manager rewriting another tool's
 configuration would be invisible and undone by nothing on uninstall, which is why `setup` is a separate
 command that asks.
@@ -242,7 +248,8 @@ windows for each of two agents is four rows of a panel whose whole point is bein
 Nothing to configure. Every Codex hook event names the session's own record, and the context fill, the
 two rate-limit windows and the effort are read out of it — the same 5-hour and 7-day windows Claude
 Code reports, and the same calculation Codex's own `/status` uses, so the two agree rather than nearly
-agree. Turning the switch off stops the file being opened for them at all.
+agree. Turning the switch off drops the limits; that one record also carries this session's context, and
+the switch has never covered context, so it goes on being read.
 
 ### Claude Code
 
@@ -314,8 +321,9 @@ before touching anything. `notchling-hooks status` prints the same answer in a t
 
 **Hiding them again is a checkbox, one per agent — they are separate accounts on separate plans.** The
 settings window behind the gear has a **Show plan usage**
-switch. Off, the panel drops that agent's line and stops reading for it; for Claude Code that means
-`~/.notchling/usage/` goes unread, and for Codex the session's own record is not opened for them. The
+switch. Off, the panel drops that agent's line; for Claude Code `~/.notchling/usage/` then goes unread
+altogether, while for Codex the limits are simply not kept — the one record they come from also carries
+this session's context, which the switch has never covered. The
 three-day cleanup of that directory carries on either way, so nothing accumulates while you are not
 looking. It takes effect within a couple of seconds and needs no restart. The status line keeps running, so per-session
 context is unaffected — removing the status line itself is `notchling-hooks no-statusline`, and that one
@@ -323,8 +331,10 @@ does need a session restart.
 
 ## Terminal compatibility
 
-Session **discovery** does not depend on your terminal at all — it comes from Claude Code. Every
-session shows up in every terminal. What varies is how precisely *click-to-focus* can land.
+Session **discovery** does not depend on your terminal at all — it comes from the agent, through its
+registry or its hooks. Every session shows up in every terminal, and this table reads the same for both
+agents: click-to-focus asks the *process* which terminal owns it, so nothing in it is specific to one.
+What varies is how precisely that can land.
 
 | Terminal | Appears in the panel | Click-to-focus | How |
 |---|---|---|---|
@@ -565,8 +575,8 @@ says what each entry actually is, including Claude Code's own pooled background 
 widget hides).
 
 **Codex plan usage missing** — one check. The **Show plan usage** switch under **Codex** in the
-settings window; off, the file is not opened for them. Nothing else is involved: no status line, and
-nothing to wire beyond the hooks.
+settings window; off, the limits are neither drawn nor kept. Nothing else is involved: no status line,
+and nothing to wire beyond the hooks.
 
 **Claude Code plan usage missing** — five checks, in order. Start with the **Show plan usage** switch
 under **Claude Code** in the settings window: off, there are no numbers whatever else is true. Then the status line is opt-in: the settings window's **Plan usage** row says whether it is wired and

@@ -106,16 +106,23 @@ final class SessionStore {
     private let now: () -> Date
     private let readPendingVersion: () -> String?
     private let readMetrics: @MainActor () -> [String: SessionMetrics]
+    /// Whether each agent's plan lines are wanted. Read on every sweep rather than captured once, so
+    /// the switch takes effect without the widget being restarted — and injectable for the same reason
+    /// the clock is: a test that had to write the real preference to pin this would be changing the
+    /// developer's own panel, and racing every other test that reads it.
+    private let showsPlanUsage: (Provider) -> Bool
     private var lastVersionCheck: Date?
 
     init(
         now: @escaping () -> Date = { Date.now },
         pendingVersion: @escaping () -> String? = { InstalledBuild.pendingVersion() },
-        metrics: @escaping @MainActor () -> [String: SessionMetrics] = { SessionMetricsReader.readAll() }
+        metrics: @escaping @MainActor () -> [String: SessionMetrics] = { SessionMetricsReader.readAll() },
+        showsPlanUsage: @escaping (Provider) -> Bool = { PanelPreference.showsPlanUsage(for: $0) }
     ) {
         self.now = now
         self.readPendingVersion = pendingVersion
         self.readMetrics = metrics
+        self.showsPlanUsage = showsPlanUsage
     }
 
     /// The only way a session leaves the store.
@@ -139,8 +146,8 @@ final class SessionStore {
     ///
     /// A pid left behind in `resolvedPIDs` and the reader's cache after the session stopped using it
     /// refuses a probe to whatever process macOS hands that number to next — the row appears and the
-    /// click quietly does nothing. `remove(key:)` only ever released the pid a session still held, so a
-    /// session whose pid *changed* stranded the old one.
+    /// click quietly does nothing. `remove(key:)` releases the pid a session still holds, which covers
+    /// a session ending; this is what covers a session whose pid changes under it.
     private func adopt(pid: Int32, startedAt: Double?, on session: inout Session) {
         if let held = session.pid, held != pid {
             release(pid: held)
@@ -251,6 +258,7 @@ final class SessionStore {
                 session.currentTool = nil
                 session.activeCalls.removeAll()
                 session.needsYouMessage = nil
+                session.isCompacting = false
 
             case "UserPromptSubmit":
                 newState = .working
@@ -265,10 +273,15 @@ final class SessionStore {
                 session.lastMessage = nil
                 session.lastPrompt = event.userInput
                 session.lastProgressAt = event.date
-                session.currentPromptID = event.promptId
+                session.currentPromptID = event.turnIdentity
                 session.isStalled = false
                 // A new turn supersedes the last finish, so an unfinished turn cannot resurface it.
                 session.lastFinishedAt = nil
+                // A turn starting means the compaction before it is over, whether or not its
+                // `PostCompact` ever arrived. Left set, it disables stall detection for the rest of
+                // the session and pins every later turn's row to "compacting" — the same backstop
+                // `agents` gets above, for the same reason.
+                session.isCompacting = false
 
             case "PreToolUse":
                 newState = .working
@@ -277,7 +290,7 @@ final class SessionStore {
                 beginTool(event, provider: key.provider, on: &session)
                 session.lastProgressAt = event.date
                 session.isStalled = false
-                if let promptID = event.promptId { session.currentPromptID = promptID }
+                if let promptID = event.turnIdentity { session.currentPromptID = promptID }
                 if session.turnStartedAt == nil { session.turnStartedAt = event.date }
 
             // Registered only for an agent that reports completions. It closes the call it names and,
@@ -285,14 +298,20 @@ final class SessionStore {
             // prompt being answered produces no event of its own, so the next thing heard about a
             // blocked session is the call finishing.
             //
-            // It cannot revive a finished turn. Only a session actually waiting goes back to working —
-            // a completion arriving after `Stop` says nothing about whether the turn is over.
+            // Which call, though, matters. An agent that runs tools concurrently can finish an
+            // auto-approved one while a sibling's prompt is still on screen, and releasing on that
+            // would say "working" of a session that is waiting — with nothing left to raise it again.
+            //
+            // It cannot revive a finished turn either. Only a session actually waiting goes back to
+            // working — a completion arriving after `Stop` says nothing about whether the turn is over.
             case "PostToolUse":
-                if session.state == .needsYou {
+                // Closed first, so the call that just finished is not counted among the ones still
+                // waiting on a person below.
+                endTool(event, on: &session)
+                if session.state == .needsYou, !session.hasBlockedCallInFlight {
                     newState = .working
                     session.needsYouMessage = nil
                 }
-                endTool(event, on: &session)
                 session.lastProgressAt = event.date
                 session.isStalled = false
 
@@ -308,11 +327,18 @@ final class SessionStore {
             case "Stop":
                 newState = .done
                 session.isStalled = false
+                session.isCompacting = false
                 // The turn ending means every agent it spawned is finished, whatever we did or did not
                 // observe. This is the backstop for a `SubagentStop` that never arrived.
                 session.agents.removeAll()
                 session.lastFinishedAt = event.date
-                session.recordCurrentToolDuration(endingAt: event.date)
+                // Only where a call's end has to be inferred. Where the agent reports one, every call
+                // was timed by its own event — and `currentTool` deliberately still names the last one
+                // to finish, so this would charge that tool for the thinking that came after it and
+                // quietly raise the stall threshold it is judged against.
+                if !key.provider.capabilities.hasToolCompletionEvents {
+                    session.recordCurrentToolDuration(endingAt: event.date)
+                }
                 // A call still open when the turn ended has no end anyone reported, so it is dropped
                 // rather than credited with the time up to here.
                 session.activeCalls.removeAll()
@@ -332,7 +358,16 @@ final class SessionStore {
             // recovers, and alerting every time trains the user to ignore the alert that matters. The
             // failure stays on the row until the next tool starts; if Claude cannot recover, the turn
             // ends and `StopFailure` raises it then.
+            //
+            // It does release attention, though. A tool that failed is a tool that *ran*, so whatever
+            // was being waited on has been answered — and a row left asking after that is asking for
+            // something nobody can give it.
             case "PostToolUseFailure":
+                endTool(event, on: &session)
+                if session.state == .needsYou, !session.hasBlockedCallInFlight {
+                    newState = .working
+                    session.needsYouMessage = nil
+                }
                 session.lastToolFailure = event.errorMessage ?? "tool failed"
                 session.currentTool = nil
                 session.currentToolSummary = nil
@@ -433,9 +468,23 @@ final class SessionStore {
         // Consumed here rather than left to fall through: handled as the session's own, it would close
         // one of the parent's calls on a child's completion, and the parent's row would name whatever
         // was left.
+        //
+        // Both guards the session's own case carries apply here too. A completion cannot revive a child
+        // that has already stopped — a late one says nothing about whether it finished. And it is the
+        // only thing that can release attention a *child's* permission prompt asked for, because
+        // approving one produces no event: without this the session waits for the rest of its life, or
+        // until the child happens to start another tool.
         case "PostToolUse":
-            agent.state = .working
+            // Closed before the release is judged, for the reason the session's own case gives: the
+            // call that just finished must not count itself among the ones still waiting.
             endTool(event, on: &agent)
+            if !agent.hasBlockedCallInFlight {
+                if !agent.isFinished { agent.state = .working }
+                if session.state == .needsYou {
+                    sessionState = .working
+                    session.needsYouMessage = nil
+                }
+            }
             recordProgress()
 
         case "Notification":
@@ -462,7 +511,12 @@ final class SessionStore {
             recordProgress()
 
         case "SubagentStop":
-            agent.recordCurrentToolDuration(endingAt: event.date)
+            // Only where a call's end has to be inferred, as in the session's own `Stop`: where the
+            // agent reports completions every call was timed by its own event, and `currentTool` still
+            // names the last one to finish.
+            if !session.provider.capabilities.hasToolCompletionEvents {
+                agent.recordCurrentToolDuration(endingAt: event.date)
+            }
             agent.activeCalls.removeAll()
             agent.state = .done
             agent.finishedAt = event.date
@@ -485,7 +539,21 @@ final class SessionStore {
 
         // As above: a failed tool call is not a failed agent. The message is kept so the row can show
         // what went wrong, but the agent stays working and nothing turns red.
+        //
+        // "Stays working" has to be said rather than assumed, and that is the whole of this. Nothing
+        // else moves an agent out of `needsYou`, and the check at the end of this function re-asserts
+        // the session's from any running agent still in it — so an agent left waiting here pins its
+        // session to `needsYou`, and every event after it pins it again. A tool that failed is a tool
+        // that ran, which means the prompt was answered.
         case "PostToolUseFailure":
+            endTool(event, on: &agent)
+            if !agent.hasBlockedCallInFlight {
+                if !agent.isFinished { agent.state = .working }
+                if session.state == .needsYou {
+                    sessionState = .working
+                    session.needsYouMessage = nil
+                }
+            }
             agent.lastMessage = event.errorMessage ?? agent.lastMessage
             agent.currentTool = nil
             agent.currentToolSummary = nil
@@ -716,10 +784,13 @@ final class SessionStore {
 
     /// The context percentage and the account's rate limits, for an agent that reports neither.
     ///
-    /// Gated so the reader is never pointed at a file it was not written for, and skipped entirely when
-    /// the person has turned the plan lines off — nobody is reading the answer, and there is no reason
-    /// to open somebody's session record to compute one. The context percentage is not covered by that
-    /// switch: it sits inside a row being read anyway.
+    /// Gated only on the agent having such a file, and deliberately not on the plan-usage switch. One
+    /// record carries both the account's limits and this session's context fill, and the switch has
+    /// never covered context — for Claude Code it stops a separate directory being read while the
+    /// status line goes on writing context regardless. Skipping the read here would take context with
+    /// it, so what the switch stops is the limits being published, which `rebuildUsage` decides — and
+    /// it is the only thing that decides it, so that turning the numbers back on shows what is true
+    /// now rather than what was true when they went off.
     private func readRollout(for key: SessionKey) {
         guard key.provider.capabilities.hasRollout,
               let session = index[key],
@@ -739,7 +810,12 @@ final class SessionStore {
                 self.index[key] = session
             }
 
-            if let usage = rollout.usage, PanelPreference.showsPlanUsage(for: key.provider) {
+            // Kept whatever the switch says, and published only through `rebuildUsage`, which is the
+            // one place that reads it. The reader never hands the same reading over twice, so
+            // discarding one here loses it for good: turn the numbers off for a few turns and back on,
+            // and what comes back is whatever was stored before — until that session's next turn, or
+            // for ever if it has gone idle.
+            if let usage = rollout.usage {
                 self.rolloutUsage[key] = usage
                 self.rebuildUsage(for: key.provider)
             }
@@ -784,9 +860,7 @@ final class SessionStore {
     /// One answer per agent out of however many of its sessions are reporting.
     private func rebuildUsage(for provider: Provider) {
         let readings = rolloutUsage.filter { $0.key.provider == provider }.map(\.value)
-        let fresh = PanelPreference.showsPlanUsage(for: provider)
-            ? UsageReader.arbitrate(readings)
-            : nil
+        let fresh = showsPlanUsage(provider) ? UsageReader.arbitrate(readings) : nil
         if usage[provider] != fresh { usage[provider] = fresh }
     }
 
@@ -818,7 +892,7 @@ final class SessionStore {
         // Turned off means not read at all rather than read and hidden. Nobody is looking at the
         // result, and the scan still reports a usage file it cannot decode — a finding in the log
         // about a part of the widget the person has switched off.
-        let freshUsage = PanelPreference.showsPlanUsage(for: .claude) ? UsageReader.read() : nil
+        let freshUsage = showsPlanUsage(.claude) ? UsageReader.read() : nil
         if usage[.claude] != freshUsage { usage[.claude] = freshUsage }
         // Read from what the rollouts already gave rather than opening them again: the switch can be
         // turned off between sweeps, and the answer has to disappear when it is.

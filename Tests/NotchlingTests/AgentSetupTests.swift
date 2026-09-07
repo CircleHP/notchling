@@ -3,6 +3,49 @@ import Testing
 
 @testable import Notchling
 
+/// What the Re-point button does after `install` has run.
+///
+/// `elsewhere` covers two different situations, and only one of them leaves anything to remove. An
+/// entry naming a copy of the hook that has moved does; one naming *this* copy without the agent
+/// argument does not, because `install` rewrites that entry where it sits — and removing "the stale
+/// one" then unwires the agent completely while the window reports success.
+@Suite("AgentSetup — re-pointing")
+struct AgentSetupRepointTests {
+    private let hook = "/opt/homebrew/bin/notchling-hook"
+
+    @Test("a stale copy elsewhere is still removed")
+    func aMovedCopyIsRemoved() {
+        #expect(AgentSetup.repointRemovesStaleEntry(
+            from: "/Users/x/Applications/Notchling.app/Contents/MacOS/notchling-hook --provider codex",
+            resolved: hook,
+            provider: .codex
+        ))
+        #expect(AgentSetup.repointRemovesStaleEntry(
+            from: "/Users/x/Applications/Notchling.app/Contents/MacOS/notchling-hook",
+            resolved: hook,
+            provider: .claude
+        ))
+    }
+
+    @Test("the entry install just upgraded is not removed")
+    func theUpgradedEntryIsKept() {
+        #expect(!AgentSetup.repointRemovesStaleEntry(from: hook, resolved: hook, provider: .codex))
+        #expect(!AgentSetup.repointRemovesStaleEntry(
+            from: "\(hook) --provider codex", resolved: hook, provider: .codex
+        ))
+    }
+
+    /// Claude's hook carries no argument, so the two forms are one — and `elsewhere` there can only
+    /// ever mean a different path.
+    @Test("Claude's entry is compared as written")
+    func claudeHasNoArgumentToStrip() {
+        #expect(!AgentSetup.repointRemovesStaleEntry(from: hook, resolved: hook, provider: .claude))
+        #expect(AgentSetup.repointRemovesStaleEntry(
+            from: "\(hook) --provider codex", resolved: hook, provider: .claude
+        ))
+    }
+}
+
 /// The environment the settings window hands to `notchling-hooks`.
 ///
 /// Worth its own tests because getting it wrong is invisible in a terminal and total in the app: the

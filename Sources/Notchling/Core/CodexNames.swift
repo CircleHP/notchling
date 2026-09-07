@@ -69,12 +69,6 @@ final class CodexNameReader {
         }
     }
 
-    /// Forget when it was last read, so the next call reads again whatever the file's date says.
-    func reset() {
-        lastModified = nil
-        inFlight = false
-    }
-
     // MARK: - Reading
 
     nonisolated static func scan(fileAt path: String) -> [String: String] {

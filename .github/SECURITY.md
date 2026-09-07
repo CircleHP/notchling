@@ -42,12 +42,13 @@ Appending rather than inserting is load-bearing for Codex specifically: Codex ke
 decision by its position in the file, so an entry written anywhere but the end renumbers the groups
 after it and invalidates the decisions the user already made about other tools' hooks — silently, and
 in the direction of re-asking rather than of granting. Anything that inserts, reorders or renumbers is
-a finding. So is anything that writes Codex's trust state at all: that record is the user's answer to a
-question about executing code, and this project never writes it.
+a finding — removal included: an emptied group is dropped only from the end of an event's array, and
+one with another tool's group behind it is left in place, empty. So is anything that writes Codex's
+trust state at all: that record is the user's answer to a question about executing code, and this
+project never writes it.
 
-The
-settings window runs this same script as a subprocess, from the copy in its own bundle rather than one
-found on `PATH`; a change that lets it run something else, or change a configuration without being
+The settings window runs this same script as a subprocess, from the copy in its own bundle rather than
+one found on `PATH`; a change that lets it run something else, or change a configuration without being
 clicked, belongs here too.
 
 **The status line chain executes a command this project did not write.** Claude Code has one status

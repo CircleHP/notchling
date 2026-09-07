@@ -36,7 +36,9 @@ struct CodexRollout: Equatable {
 /// How far a rollout has been examined, and what it yielded.
 struct CodexRolloutScan: Equatable {
     var rollout: CodexRollout
-    /// How big the file was when it was read. Only what arrives above this can change the answer.
+    /// How big the file was when it was read. Two things turn on it: nothing below it is new ground, so
+    /// the next scan stops there; and a file *smaller* than it was replaced rather than appended to,
+    /// which is the one thing that makes everything known about it stop holding.
     var readTo: UInt64
 }
 
@@ -122,9 +124,16 @@ final class CodexRolloutReader {
         var scanned = 0
         var carry = Data()
 
+        // Nothing below where the last scan reached is new: it was read then, and what it found is
+        // carried in below. A chunk straddling this still gets read whole, because a chunk is measured
+        // back from the offset above rather than forward from here — which is what keeps a record
+        // written across the boundary from being read as two broken halves.
+        let floor = carried?.readTo ?? 0
+
         // The two numbers are what this is for. Effort is opportunistic: it is worth having if a turn's
         // context is in a chunk already read, and never worth another chunk of its own.
-        while offset > 0, scanned < maxBytesScanned, found.metrics == nil || found.usage == nil {
+        while offset > floor, scanned < maxBytesScanned,
+              found.metrics?.contextUsedPercent == nil || found.usage == nil {
             let size = UInt64(min(UInt64(chunkSize), offset))
             offset -= size
             guard (try? handle.seek(toOffset: offset)) != nil,
@@ -153,7 +162,19 @@ final class CodexRolloutReader {
             }
         }
 
-        if found.metrics == nil { found.metrics = carried?.rollout.metrics }
+        // On the percentage rather than on the reading as a whole, and for the same reason as the guard
+        // in `absorbTokenCount`: a `turn_context` record makes `metrics` non-nil carrying only the
+        // effort, and a carry keyed on `metrics == nil` then dropped a percentage the last scan had
+        // already found — writing nil onto the row for the length of the turn being watched.
+        //
+        // Its own stamp comes with it, so `SessionMetrics.isStale` can still retire a reading that has
+        // stopped being true.
+        if found.metrics?.contextUsedPercent == nil,
+           let previous = carried?.rollout.metrics, previous.contextUsedPercent != nil {
+            let effort = found.metrics?.effort ?? previous.effort
+            found.metrics = previous
+            found.metrics?.effort = effort
+        }
         if found.usage == nil { found.usage = carried?.rollout.usage }
         // Effort does not change within a session, so once seen it is kept rather than looked for again.
         if found.metrics?.effort == nil, let effort = carried?.rollout.metrics?.effort {
@@ -178,7 +199,9 @@ final class CodexRolloutReader {
 
         let stamp = (object["timestamp"] as? String).flatMap(Self.timestamp(from:)) ?? Date.now
 
-        if isTokenCount {
+        // Both checked against the record's own type, not against the substring that got the line this
+        // far: a short record of some other kind could carry the same word and an `info` object.
+        if isTokenCount, payload["type"] as? String == "token_count" {
             absorbTokenCount(payload, at: stamp, into: &found)
         }
         if isTurnContext, object["type"] as? String == "turn_context" {
@@ -202,7 +225,13 @@ final class CodexRolloutReader {
             if reading.fiveHour != nil || reading.sevenDay != nil { found.usage = reading }
         }
 
-        guard found.metrics == nil, let info = payload["info"] as? [String: Any] else { return }
+        // On the field wanted, not on the whole reading. A turn's context is written *before* the token
+        // count that closes the turn, so reading backwards during a turn in progress finds a reading
+        // carrying only the effort — and a guard on the reading itself skips the numbers for as long as
+        // that turn lasts.
+        guard found.metrics?.contextUsedPercent == nil,
+              let info = payload["info"] as? [String: Any]
+        else { return }
         let window = (info["model_context_window"] as? NSNumber)?.intValue
         let used = ((info["last_token_usage"] as? [String: Any])?["total_tokens"] as? NSNumber)?.intValue
 
@@ -261,8 +290,8 @@ final class CodexRolloutReader {
     private nonisolated static let tokenCountMarker = Data(#""token_count""#.utf8)
     private nonisolated static let turnContextMarker = Data(#""turn_context""#.utf8)
 
-    /// Built per call rather than held: `ISO8601DateFormatter` is not `Sendable`, and this runs at most
-    /// twice per scan — once for each record — so there is nothing to save by keeping one around.
+    /// Built per call rather than held: `ISO8601DateFormatter` is not `Sendable`, and this runs once per
+    /// record a scan looks at, of which there are a handful in the chunk it reads.
     private nonisolated static func timestamp(from raw: String) -> Date? {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

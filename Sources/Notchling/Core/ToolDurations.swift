@@ -135,6 +135,14 @@ extension ToolTracking {
         currentToolSummary = latest?.summary
     }
 
+    /// Whether anything still in flight was already in flight while a person was being asked.
+    ///
+    /// One completion is not proof the prompt was answered. An agent that runs tools concurrently has
+    /// several calls open at once, and the event saying a person is deciding carries no call id — so
+    /// every call open at that moment is marked, and attention is owed until the last of them reports
+    /// back. Always false for an agent that reports no completions, which has nothing in flight here.
+    var hasBlockedCallInFlight: Bool { activeCalls.values.contains { $0.wasBlocked } }
+
     /// What the running tool usually manages, when we have seen it finish before.
     var currentToolUsualDuration: TimeInterval? {
         currentTool.flatMap { toolDurations.longestSeen(for: $0) }

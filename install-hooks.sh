@@ -106,11 +106,23 @@ case "$PROVIDER" in
   *) die "unknown provider: $PROVIDER (expected claude or codex)" ;;
 esac
 
-# Claude Code's status line is Claude Code's: no other agent has the slot, and nothing else carries the
-# plan limits that reach it.
-if [ "$PROVIDER" != "claude" ] && case "$MODE" in statusline|no-statusline) true ;; *) false ;; esac; then
-  die "the status line is Claude Code's; --provider does not apply to \`$MODE\`"
-fi
+# `--provider` names whose hooks file to edit, so only the two modes that edit one take it.
+#
+# `status` and `setup` already cover every agent in a single pass, and honouring the flag there would
+# point every Claude-side read — what holds the status line slot, whether the plugin provides the
+# hooks, the prompts `setup` puts to the person — at the wrong file entirely. The status line is
+# Claude Code's outright: no other agent has the slot, and nothing else carries the plan limits.
+case "$MODE" in
+  install|uninstall) ;;
+  statusline|no-statusline)
+    [ "$PROVIDER" = "claude" ] \
+      || die "the status line is Claude Code's; --provider does not apply to \`$MODE\`"
+    ;;
+  *)
+    [ "$PROVIDER" = "claude" ] \
+      || die "--provider applies to \`install\` and \`uninstall\`; \`$MODE\` covers every agent it finds"
+    ;;
+esac
 
 if [ "$MODE" != "status" ] && [ -n "$JSON" ]; then
   die "--json applies to \`status\` only"
@@ -126,6 +138,8 @@ fi
 
 HOOK_TIMEOUT=""
 HOOK_ARGUMENTS=""
+# Whether a group of ours that has been emptied has to stay where it is. See `uninstall` below.
+KEEP_EMPTY_GROUPS=false
 
 if [ "$PROVIDER" = "codex" ]; then
   # `CODEX_HOME` relocates the whole directory. Read here rather than assumed, because a GUI launched
@@ -159,6 +173,12 @@ if [ "$PROVIDER" = "codex" ]; then
   # Nothing in a payload tells the agents apart: Codex names every event they share exactly as Claude
   # Code does, PascalCase and all, and its field names match too. So the hook is told.
   HOOK_ARGUMENTS=" --provider codex"
+
+  # Codex keys a hook's trust decision by its position — `hooks.json:<snake_event>:<group>:<hook>` —
+  # so removing a group from the middle of an event's array renumbers every group behind it, and each
+  # one that moves stops matching the hash it was trusted under. Verified against codex-cli 0.153.4:
+  # a group with an empty `hooks` array parses and runs nothing.
+  KEEP_EMPTY_GROUPS=true
 fi
 
 # --- Path resolution -------------------------------------------------------------------------
@@ -456,10 +476,17 @@ if [ "$MODE" = "setup" ]; then
       else
         printf '  codex       wired to %s, which is not the copy just installed\n' "$existing"
         if confirm "Re-point them at $hook?" y; then
+          # Install first: the other way round, an install that fails leaves the agent wired to
+          # nothing. Then remove the old copy — unless the old copy *is* this binary, differing only
+          # by the agent argument, in which case `install` has already upgraded that entry where it
+          # sat and removing it now would unwire Codex completely.
+          #
           # The written command carries the argument; the installer appends it, so it is handed the
           # binary rather than the string that was found.
-          "$0" uninstall "${existing% --provider codex}" --provider codex >/dev/null
           "$0" install "$hook" --provider codex
+          if [ "${existing% --provider codex}" != "$hook" ]; then
+            "$0" uninstall "${existing% --provider codex}" --provider codex >/dev/null
+          fi
           CODEX_WIRED_IN_SETUP=1
         fi
       fi
@@ -538,7 +565,9 @@ if [ "$MODE" = "status" ]; then
     hooks=plugin
   elif [ -z "$wired" ]; then
     hooks=none
-  elif [ "$wired" = "$hook" ]; then
+  elif [ "$wired" = "$hook" ] || [ -z "$hook" ]; then
+    # `elsewhere` says the wired copy is not the one found now. With none found there is nothing to
+    # compare against, and reporting it anyway offers a re-point the window then cannot honour.
     hooks=wired
   else
     # Wired, but to a copy of the hook that is not the one this script resolves — an install that
@@ -546,8 +575,9 @@ if [ "$MODE" = "status" ]; then
     hooks=elsewhere
   fi
 
-  # Added beside the existing answers rather than folded into them: the settings window decodes this
-  # object, and an older build of it has to keep working against a newer script.
+  # Codex's answers sit in an object of their own, beside the flat keys rather than among them: the
+  # settings window decodes this, and a build of it that knows nothing about Codex has to keep working
+  # against this script.
   codex_available=false
   codex_present && codex_available=true
   codex_wired=$(codex_wired_command || printf '')
@@ -555,7 +585,7 @@ if [ "$MODE" = "status" ]; then
   [ -z "$hook" ] || codex_expected="$hook --provider codex"
   if [ -z "$codex_wired" ]; then
     codex_hooks=none
-  elif [ "$codex_wired" = "$codex_expected" ]; then
+  elif [ "$codex_wired" = "$codex_expected" ] || [ -z "$hook" ]; then
     codex_hooks=wired
   else
     codex_hooks=elsewhere
@@ -817,12 +847,27 @@ cp "$SETTINGS" "$BACKUP"
 EVENTS_JSON=$(printf '%s\n' "${EVENTS[@]}" | jq -R . | jq -s .)
 
 if [ "$MODE" = "install" ]; then
+  # Appends, except where an entry naming this binary is already there. One carrying the agent
+  # argument is left exactly as it is; one without it — hand-wired, or written by a build that had no
+  # argument to add — is upgraded where it sits. Appending beside that one instead would report every
+  # event twice, once as the wrong agent's, and moving it would renumber the groups behind it.
   PROGRAM='
     .hooks //= {}
     | reduce $events[] as $event (.;
         .hooks[$event] //= []
         | if any(.hooks[$event][]?; any(.hooks[]?; .command == $cmd))
           then .
+          elif any(.hooks[$event][]?; any(.hooks[]?; .command == $bare))
+          then .hooks[$event] = [
+                 .hooks[$event][]
+                 | .hooks = [
+                     .hooks[]?
+                     | if .command == $bare
+                       then . + {"command": $cmd}
+                            + (if $timeout == null then {} else {"timeout": $timeout} end)
+                       else . end
+                   ]
+               ]
           else .hooks[$event] += [{"hooks": [
                  {"type": "command", "command": $cmd}
                  + (if $timeout == null then {} else {"timeout": $timeout} end)
@@ -831,16 +876,27 @@ if [ "$MODE" = "install" ]; then
       )
   '
 elif [ "$MODE" = "uninstall" ]; then
-  # Drop only our own entries, and only the groups that become empty as a result.
+  # Drop only our own entries, and only the groups of ours that become empty as a result — a group
+  # that was already empty belongs to somebody else and is left alone.
+  #
+  # Where it becomes empty decides whether it can go. A trailing one can: nothing sits behind it to
+  # renumber. One with another tool behind it stays as an empty placeholder wherever positions carry
+  # meaning, because Codex identifies a hook it has been asked about by its index in this array.
   PROGRAM='
     if .hooks == null then . else
       reduce $events[] as $event (.;
         if .hooks[$event] == null then . else
-          .hooks[$event] = [
-            .hooks[$event][]
-            | .hooks = [.hooks[]? | select(.command != $cmd)]
-            | select((.hooks | length) > 0)
-          ]
+          .hooks[$event] = (
+            [ .hooks[$event][]
+              | (any(.hooks[]?; .command == $cmd or .command == $bare)) as $ours
+              | .hooks = [.hooks[]? | select(.command != $cmd and .command != $bare)]
+              | {group: ., emptied: ($ours and ((.hooks | length) == 0))}
+            ]
+            | (map(.emptied) | reverse | index(false)) as $trailing
+            | (if $trailing == null then [] else .[0 : length - $trailing] end)
+            | if $keepEmpty then map(.group)
+              else [.[] | select(.emptied | not) | .group] end
+          )
           | if (.hooks[$event] | length) == 0 then del(.hooks[$event]) else . end
         end
       )
@@ -853,7 +909,13 @@ fi
 TMP=$(mktemp "$SETTINGS.notchling.XXXXXX")
 trap 'rm -f "$TMP"' EXIT
 
-jq --arg cmd "$HOOK_COMMAND" --argjson events "$EVENTS_JSON" \
+# `bare` is the same command without the agent argument, and only differs from `cmd` where that
+# argument exists at all. Both modes read it: an entry naming this binary in an agent's own hooks file
+# is ours whether or not it carries the flag, and one left behind reports that agent's sessions as
+# Claude's.
+jq --arg cmd "$HOOK_COMMAND" --arg bare "${HOOK_COMMAND%"$HOOK_ARGUMENTS"}" \
+   --argjson events "$EVENTS_JSON" \
+   --argjson keepEmpty "$KEEP_EMPTY_GROUPS" \
    --argjson timeout "${HOOK_TIMEOUT:-null}" "$PROGRAM" "$SETTINGS" > "$TMP"
 
 # Sanity-check the result before it replaces a file that controls how every session behaves.
@@ -864,6 +926,14 @@ if [ "$MODE" = "install" ]; then
     found=$(jq --arg cmd "$HOOK_COMMAND" --arg event "$event" \
       '[.hooks[$event][]? | .hooks[]? | select(.command == $cmd)] | length' "$TMP")
     [ "$found" = "1" ] || die "expected exactly 1 entry for $event, got $found (backup: $BACKUP)"
+    # Nothing of the old form may be left: an entry without the agent argument reports this agent's
+    # sessions as Claude's, alongside the one that reports them correctly. The upgrade above handles
+    # the ordinary case — a file holding both forms at once is one nothing here wrote, so it is
+    # refused rather than guessed at, and the file is left exactly as it was.
+    stale=$(jq --arg bare "${HOOK_COMMAND%"$HOOK_ARGUMENTS"}" --arg cmd "$HOOK_COMMAND" --arg event "$event" \
+      '[.hooks[$event][]? | .hooks[]? | select(.command == $bare and $bare != $cmd)] | length' "$TMP")
+    [ "$stale" = "0" ] \
+      || die "$event has an entry without \`$HOOK_ARGUMENTS\` beside ours — run \`uninstall\` then \`install\` ($SETTINGS is unchanged)"
   done
 fi
 

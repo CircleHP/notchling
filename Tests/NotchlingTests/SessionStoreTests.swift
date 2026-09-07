@@ -1473,6 +1473,30 @@ struct LifecycleEventTests {
         #expect(session.activityLine(now: t + 4) == "Bash · npm test")
     }
 
+    /// `PostCompact` is a hook like any other: it can be killed by the two-second timeout, dropped at
+    /// the spool cap, or never sent because compaction was abandoned. Left set, the flag disables stall
+    /// detection for the rest of the session and puts `compacting` on every later turn.
+    @Test("a turn starting ends a compaction whose end never arrived", arguments: ["UserPromptSubmit", "Stop", "SessionStart"])
+    func aLostPostCompactDoesNotOutliveTheTurn(event: String) {
+        let clock = TestClock()
+        let store = SessionStore(now: clock.now)
+        var stalled: [String] = []
+        store.onStalled = { stalled.append($0.sessionID) }
+
+        store.apply(codexEvent("UserPromptSubmit", at: clock.current))
+        store.apply(codexEvent("PreCompact", at: clock.current))
+        store.apply(codexEvent(event, at: clock.current))
+        #expect(store.session(key: key)?.isCompacting == false)
+
+        store.apply(codexEvent("UserPromptSubmit", at: clock.current))
+        store.apply(codexEvent("PreToolUse", at: clock.current, ["toolName": "Bash", "toolUseId": "e1"]))
+        clock.advance(SessionStore.stallThreshold + 60)
+        store.tick()
+
+        #expect(stalled == ["cx1"], "stall detection is working again")
+        #expect(store.session(key: key)?.activityLine(now: clock.current) != "compacting")
+    }
+
     /// A child's context compacting is as quiet as the parent's, and the flag exists to stop quiet
     /// reading as wedged. What it must not do is take over the row: `3/5 done` says more than
     /// `compacting`, and the fan-out is what the person is waiting on.
@@ -1572,6 +1596,43 @@ struct ConcurrentCallTests {
 
         #expect(session(store)?.state == .working)
         #expect(session(store)?.needsYouMessage == nil)
+    }
+
+    /// The prompt carries no call id, so every call open when it arrived is a candidate for being the
+    /// one asking. Releasing on the first of them to finish says "working" of a session whose terminal
+    /// is still waiting — and Codex sends nothing else to raise it again.
+    @Test("a sibling still waiting keeps the row asking")
+    func aBlockedSiblingHoldsAttention() {
+        let store = working()
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Bash", "toolUseId": a]))
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Read", "toolUseId": b]))
+        store.apply(codexEvent("Notification", at: t + 2, [
+            "notificationType": "permission_prompt", "message": "Allow rm?",
+        ]))
+        #expect(session(store)?.state == .needsYou)
+
+        store.apply(codexEvent("PostToolUse", at: t + 3, ["toolName": "Read", "toolUseId": b]))
+        #expect(session(store)?.state == .needsYou, "the other call was in flight when the prompt came")
+        #expect(session(store)?.needsYouMessage == "Allow rm?")
+
+        store.apply(codexEvent("PostToolUse", at: t + 30, ["toolName": "Bash", "toolUseId": a]))
+        #expect(session(store)?.state == .working, "nothing is left that could be the one asking")
+        #expect(session(store)?.needsYouMessage == nil)
+    }
+
+    /// A call that starts *after* the prompt was answered was never behind it, so it cannot hold
+    /// attention that has already been released.
+    @Test("a call started after the release does not raise it again")
+    func aLaterCallIsNotBlocked() {
+        let store = working()
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Bash", "toolUseId": a]))
+        store.apply(codexEvent("Notification", at: t + 2, ["notificationType": "permission_prompt"]))
+        store.apply(codexEvent("PostToolUse", at: t + 20, ["toolName": "Bash", "toolUseId": a]))
+        #expect(session(store)?.state == .working)
+
+        store.apply(codexEvent("PreToolUse", at: t + 21, ["toolName": "Read", "toolUseId": b]))
+        store.apply(codexEvent("PostToolUse", at: t + 22, ["toolName": "Read", "toolUseId": b]))
+        #expect(session(store)?.state == .working)
     }
 
     /// Eighteen seconds of it was a person reading a prompt, which says nothing about the tool.
@@ -1987,6 +2048,37 @@ struct CodexMetricsTests {
         #expect(store.session(key: key)?.metrics?.model == "gpt-5.6-sol")
     }
 
+    /// The reader never hands the same reading over twice, so the switch cannot be allowed to discard
+    /// one: turned off for a few turns and back on, the panel would show whatever was stored before —
+    /// for ever, if that session has since gone idle.
+    @Test("a reading taken while the numbers are off is the one shown when they come back on")
+    func readingsSurviveTheSwitch() async throws {
+        let path = rollout()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let shown = Shown(false)
+        let store = SessionStore(metrics: { [:] }, showsPlanUsage: { _ in shown.value })
+        let event = { store.apply(codexEvent("UserPromptSubmit", ["transcriptPath": path])) }
+        event()
+        _ = await settle(store, poke: event) {
+            store.session(key: self.key)?.metrics?.contextUsedPercent != nil
+        }
+        #expect(store.usage[.codex] == nil, "nothing is drawn while the switch is off")
+
+        shown.value = true
+        store.tick()
+        #expect(store.usage[.codex]?.fiveHour?.usedPercentage == 77,
+                "what the rollout said, without waiting for that session to speak again")
+    }
+
+    /// A switch somebody can flip while the panel is open, which is why the store reads it rather than
+    /// capturing it.
+    @MainActor
+    private final class Shown {
+        var value: Bool
+        init(_ value: Bool) { self.value = value }
+    }
+
     /// A Claude session must not be pointed at the reader, whatever path its events name.
     @Test("a Claude session's transcript is never read as a rollout")
     func claudeIsNotRead() async {
@@ -2066,5 +2158,179 @@ struct CodexNameSourceTests {
         let claude = store.session(key: SessionKey(provider: .claude, id: "01a07c1f"))
         #expect(claude?.aiTitle == nil)
         #expect(claude?.displayName == "notchling")
+    }
+}
+
+/// A child's events are the child's, but three of the rules the session's own case spells out apply to
+/// them too — and each was missing from the copy.
+@Suite("SessionStore — a child's completion")
+@MainActor
+struct ChildCompletionTests {
+    private let t = Date(timeIntervalSince1970: 1_000_000)
+    private let key = SessionKey(provider: .codex, id: "cx1")
+
+    private func fanOut() -> SessionStore {
+        let store = SessionStore(metrics: { [:] })
+        store.apply(codexEvent("UserPromptSubmit", at: t))
+        store.apply(codexEvent("SubagentStart", at: t + 1, ["agentId": "ag1", "agentType": "explore"]))
+        return store
+    }
+
+    /// Approving a permission prompt produces no event, so a completion is the only thing that can say
+    /// the human is done — whoever asked. Without this the session waits for the rest of its life, or
+    /// until the child happens to start another tool.
+    @Test("a child's completion releases attention the child asked for")
+    func childCompletionReleasesTheSession() {
+        let store = fanOut()
+        store.apply(codexEvent("PreToolUse", at: t + 2, [
+            "agentId": "ag1", "toolName": "Grep", "toolUseId": "e1",
+        ]))
+        store.apply(codexEvent("Notification", at: t + 3, [
+            "agentId": "ag1", "notificationType": "permission_prompt", "message": "Allow?",
+        ]))
+        #expect(store.session(key: key)?.state == .needsYou)
+
+        store.apply(codexEvent("PostToolUse", at: t + 40, [
+            "agentId": "ag1", "toolName": "Grep", "toolUseId": "e1",
+        ]))
+
+        #expect(store.session(key: key)?.state == .working)
+        #expect(store.session(key: key)?.needsYouMessage == nil)
+        #expect(store.session(key: key)?.attentionSince == nil)
+    }
+
+    /// A late completion says nothing about whether the child finished. The session's own case guards
+    /// exactly this; the child's did not, so a finished row went back to working.
+    @Test("a completion after a child has stopped does not revive it")
+    func lateChildCompletionDoesNotRevive() {
+        let store = fanOut()
+        store.apply(codexEvent("PreToolUse", at: t + 2, [
+            "agentId": "ag1", "toolName": "Grep", "toolUseId": "e1",
+        ]))
+        store.apply(codexEvent("SubagentStop", at: t + 3, ["agentId": "ag1", "lastMessage": "found it"]))
+        #expect(store.session(key: key)?.agents["ag1"]?.state == .done)
+
+        store.apply(codexEvent("PostToolUse", at: t + 4, [
+            "agentId": "ag1", "toolName": "Grep", "toolUseId": "e1",
+        ]))
+
+        #expect(store.session(key: key)?.agents["ag1"]?.state == .done)
+        #expect(store.session(key: key)?.agents["ag1"]?.isFinished == true)
+    }
+
+    /// Where the agent reports completions, every call was timed by its own event — and the row still
+    /// names the last one to finish, so closing it again at `Stop` charges that tool for the thinking
+    /// that came after it, and raises the threshold it is later judged against.
+    @Test("a turn ending does not time a tool a second time")
+    func stopDoesNotDoubleCount() {
+        let store = SessionStore(metrics: { [:] })
+        store.apply(codexEvent("UserPromptSubmit", at: t))
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Bash", "toolUseId": "e1"]))
+        store.apply(codexEvent("PostToolUse", at: t + 3, ["toolName": "Bash", "toolUseId": "e1"]))
+        store.apply(codexEvent("Stop", at: t + 90, ["lastMessage": "done"]))
+
+        #expect(store.session(key: key)?.toolDurations.longestSeen(for: "Bash") == 2,
+                "its own two seconds, not the eighty-seven that followed")
+    }
+
+    /// Claude Code reports no completions, so its calls must still be closed by inference at `Stop`.
+    @Test("an agent that reports none still has its last call timed")
+    func claudeStillClosesAtStop() {
+        let store = SessionStore(metrics: { [:] })
+        store.apply(hookEvent("UserPromptSubmit", at: t))
+        store.apply(hookEvent("PreToolUse", at: t + 1, ["toolName": "Bash"]))
+        store.apply(hookEvent("Stop", at: t + 5, ["lastMessage": "done"]))
+
+        let session = store.session(key: SessionKey(provider: .claude, id: "s1"))
+        #expect(session?.toolDurations.longestSeen(for: "Bash") == 4)
+    }
+}
+
+/// A tool failing is routine — Claude retries and usually recovers — so it must not raise an alert.
+/// That was true of the `error` state and not of attention: nothing moved an agent out of `needsYou`,
+/// and the check that bubbles a blocked child up to its session re-asserted it on every event after.
+@Suite("SessionStore — a failed tool does not ask for attention")
+@MainActor
+struct FailureReleasesAttentionTests {
+    private let t = Date(timeIntervalSince1970: 1_000_000)
+    private let key = SessionKey(provider: .claude, id: "s1")
+
+    /// The reported case: approve a subagent's tool, the tool fails, and the session sits on
+    /// `needs you` — asking for something nobody can give it.
+    @Test("a child's approved tool failing releases its session")
+    func childFailureReleasesTheSession() {
+        let store = SessionStore(metrics: { [:] })
+        store.apply(hookEvent("UserPromptSubmit", at: t))
+        store.apply(hookEvent("SubagentStart", at: t + 1, ["agentId": "ag1"]))
+        store.apply(hookEvent("PreToolUse", at: t + 2, ["agentId": "ag1", "toolName": "Bash"]))
+        store.apply(hookEvent("Notification", at: t + 3, [
+            "agentId": "ag1", "notificationType": "permission_prompt", "message": "Allow npm?",
+        ]))
+        #expect(store.session(key: key)?.state == .needsYou)
+
+        store.apply(hookEvent("PostToolUseFailure", at: t + 9, [
+            "agentId": "ag1", "errorMessage": "Exit code 1",
+        ]))
+
+        #expect(store.session(key: key)?.state == .working, "the tool ran, so the prompt was answered")
+        #expect(store.session(key: key)?.needsYouMessage == nil)
+        #expect(store.session(key: key)?.agents["ag1"]?.state == .working, "and nothing turned red")
+    }
+
+    /// And it stays released. The check that bubbles a blocked child up runs at the end of *every*
+    /// agent-scoped event, so a child left in `needsYou` re-raised it each time.
+    @Test("it stays released as the child carries on")
+    func releaseSurvivesLaterChildEvents() {
+        let store = SessionStore(metrics: { [:] })
+        store.apply(hookEvent("UserPromptSubmit", at: t))
+        store.apply(hookEvent("SubagentStart", at: t + 1, ["agentId": "ag1"]))
+        store.apply(hookEvent("Notification", at: t + 2, [
+            "agentId": "ag1", "notificationType": "permission_prompt", "message": "Allow?",
+        ]))
+        store.apply(hookEvent("PostToolUseFailure", at: t + 3, ["agentId": "ag1", "errorMessage": "nope"]))
+        store.apply(hookEvent("PostToolUseFailure", at: t + 4, ["agentId": "ag1", "errorMessage": "nope again"]))
+
+        #expect(store.session(key: key)?.state == .working)
+    }
+
+    @Test("the session's own failed tool releases it too")
+    func ownFailureReleases() {
+        let store = SessionStore(metrics: { [:] })
+        store.apply(hookEvent("UserPromptSubmit", at: t))
+        store.apply(hookEvent("PreToolUse", at: t + 1, ["toolName": "Bash"]))
+        store.apply(hookEvent("Notification", at: t + 2, [
+            "notificationType": "permission_prompt", "message": "Allow npm?",
+        ]))
+        #expect(store.session(key: key)?.state == .needsYou)
+
+        store.apply(hookEvent("PostToolUseFailure", at: t + 8, ["errorMessage": "Exit code 1"]))
+
+        #expect(store.session(key: key)?.state == .working)
+        #expect(store.session(key: key)?.lastToolFailure == "Exit code 1", "still shown, just not shouted")
+    }
+
+    /// A genuine prompt inside a child must still reach the session — that is the notification this
+    /// whole widget exists to deliver, and over-correcting here would drop it.
+    @Test("a child's permission prompt still asks")
+    func genuinePromptStillAsks() {
+        let store = SessionStore(metrics: { [:] })
+        store.apply(hookEvent("UserPromptSubmit", at: t))
+        store.apply(hookEvent("SubagentStart", at: t + 1, ["agentId": "ag1"]))
+        store.apply(hookEvent("Notification", at: t + 2, [
+            "agentId": "ag1", "notificationType": "permission_prompt", "message": "Allow rm?",
+        ]))
+
+        #expect(store.session(key: key)?.state == .needsYou)
+        #expect(store.session(key: key)?.needsYouMessage == "Allow rm?")
+    }
+
+    /// And a failed *turn* still turns red. `StopFailure` is the case that means Claude could not
+    /// recover, which is a different thing from one tool call returning non-zero.
+    @Test("a failed turn is still an error")
+    func failedTurnStillErrors() {
+        let store = SessionStore(metrics: { [:] })
+        store.apply(hookEvent("UserPromptSubmit", at: t))
+        store.apply(hookEvent("StopFailure", at: t + 2, ["errorMessage": "API error"]))
+        #expect(store.session(key: key)?.state == .error)
     }
 }

@@ -801,6 +801,82 @@ struct CodexWiringTests {
         }
     }
 
+    /// An entry naming this binary without the agent argument is ours: a hand-wired one, or one an
+    /// older build wrote. Appended beside rather than upgraded, it reports every Codex event twice —
+    /// once as a phantom Claude session, because a spool event with no provider means Claude.
+    @Test("an entry wired without the agent argument is upgraded where it sits")
+    func aFlaglessEntryIsAdoptedInPlace() throws {
+        try withHome { home, hook in
+            let file = home.appendingPathComponent(".codex/hooks.json")
+            let existing: [String: Any] = ["hooks": ["PreToolUse": [
+                ["hooks": [["type": "command", "command": hook.path]]],
+                ["hooks": [["type": "command", "command": "/other/tool.sh"]]],
+            ]]]
+            try JSONSerialization.data(withJSONObject: existing).write(to: file)
+
+            try installer(["install", hook.path, "--provider", "codex"], home: home)
+
+            let pre = try groups(home, "PreToolUse")
+            #expect(pre.count == 2, "upgraded, not appended beside")
+            #expect(command(pre[0]) == "\(hook.path) --provider codex", "and still group 0")
+            #expect(command(pre[1]) == "/other/tool.sh", "so nothing behind it has moved")
+        }
+    }
+
+    /// Where a group of ours is emptied decides whether it can go. Removing one from the middle
+    /// renumbers every group behind it, and each hook that moves stops matching the hash Codex
+    /// recorded its trust under — so an empty group is left standing in its place instead.
+    @Test("uninstalling from the middle of an event leaves the positions behind it alone")
+    func uninstallDoesNotRenumber() throws {
+        try withHome { home, hook in
+            let file = home.appendingPathComponent(".codex/hooks.json")
+            let existing: [String: Any] = ["hooks": ["PreToolUse": [
+                ["hooks": [["type": "command", "command": "\(hook.path) --provider codex"]]],
+                ["hooks": [["type": "command", "command": "/other/tool.sh"]]],
+            ]]]
+            try JSONSerialization.data(withJSONObject: existing).write(to: file)
+
+            try installer(["uninstall", hook.path, "--provider", "codex"], home: home)
+
+            let pre = try groups(home, "PreToolUse")
+            #expect(pre.count == 2, "the group stays, so the one behind it keeps its index")
+            #expect((pre[0]["hooks"] as? [[String: Any]])?.isEmpty == true, "ours, emptied")
+            #expect(command(pre[1]) == "/other/tool.sh", "still group 1")
+        }
+    }
+
+    /// A group that was already empty is somebody else's, and untouched — including the decision not to
+    /// take it as the end of the array.
+    @Test("an empty group nobody wired is left where it is")
+    func aForeignEmptyGroupSurvives() throws {
+        try withHome { home, hook in
+            let file = home.appendingPathComponent(".codex/hooks.json")
+            let existing: [String: Any] = ["hooks": ["PreToolUse": [
+                ["hooks": [] as [[String: Any]]],
+                ["hooks": [["type": "command", "command": "\(hook.path) --provider codex"]]],
+            ]]]
+            try JSONSerialization.data(withJSONObject: existing).write(to: file)
+
+            try installer(["uninstall", hook.path, "--provider", "codex"], home: home)
+
+            let pre = try groups(home, "PreToolUse")
+            #expect(pre.count == 1, "ours was trailing, so it could go")
+            #expect((pre[0]["hooks"] as? [[String: Any]])?.isEmpty == true, "theirs is still theirs")
+        }
+    }
+
+    /// `--provider` names whose hooks file to edit. `status` and `setup` cover every agent in one pass,
+    /// and honouring it there points every Claude-side read — the status line slot, the plugin check,
+    /// the prompts — at the wrong file, then reports "not wired" about a machine that is.
+    @Test("only the modes that edit a hooks file take an agent", arguments: ["status", "setup"])
+    func providerIsRefusedElsewhere(mode: String) throws {
+        try withHome { home, _ in
+            let run = try installer([mode, "--provider", "codex"], home: home)
+            #expect(run.status != 0)
+            #expect(run.output.contains("--provider applies to"))
+        }
+    }
+
     /// Writing the file is not enough and cannot be. Codex will not run a hook whose definition has
     /// not been reviewed, and the record of that review is a hash it keeps itself — writing one here
     /// would forge an answer to a question meant for the person.
@@ -959,5 +1035,89 @@ struct CodexWiringTests {
             #expect(run.status != 0)
             #expect(run.output.contains("status line"))
         }
+    }
+}
+
+/// Two states that only appear when something else is already unusual, and both of which used to end
+/// with a machine wired to a hook that reports Codex sessions as Claude's.
+@Suite(
+    "install-hooks.sh — awkward Codex wiring",
+    .enabled(if: scripts != nil, "install-hooks.sh or jq is not available")
+)
+struct CodexWiringEdgeTests {
+    private func run(_ arguments: [String], home: URL, path: String? = nil) throws -> String {
+        let process = Process()
+        process.executableURL = try #require(scripts?.installer)
+        process.arguments = arguments
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOME"] = home.path
+        environment.removeValue(forKey: "CODEX_HOME")
+        environment["PATH"] = path ?? "\(home.appendingPathComponent("bin").path):\(environment["PATH"] ?? "")"
+        process.environment = environment
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        process.standardInput = FileHandle.nullDevice
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    private func scratch(_ hooks: String) throws -> (home: URL, hook: URL) {
+        let home = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("notchling-edge-\(UUID().uuidString)")
+        let codex = home.appendingPathComponent(".codex")
+        let bin = home.appendingPathComponent("bin")
+        for dir in [codex, bin, home.appendingPathComponent(".claude")] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        let hook = bin.appendingPathComponent("notchling-hook")
+        try "#!/bin/sh\nexit 0\n".write(to: hook, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: hook.path)
+        try "{}".write(to: home.appendingPathComponent(".claude/settings.json"), atomically: true, encoding: .utf8)
+        try hooks.replacingOccurrences(of: "HOOK", with: hook.path)
+            .write(to: codex.appendingPathComponent("hooks.json"), atomically: true, encoding: .utf8)
+        return (home, hook)
+    }
+
+    /// An entry naming this binary in Codex's own file is ours whether or not it carries the agent
+    /// argument — and one left behind is a hook reporting Codex sessions as Claude's, which is exactly
+    /// what the downgrade warning is about.
+    @Test("uninstall removes our entry even when it was wired without the agent argument")
+    func uninstallMatchesAFlaglessEntry() throws {
+        let (home, hook) = try scratch("""
+        {"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"HOOK"}]}],
+                  "Stop":[{"hooks":[{"type":"command","command":"/other/tool.sh"}]}]}}
+        """)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        _ = try run(["uninstall", hook.path, "--provider", "codex"], home: home)
+
+        let data = try Data(contentsOf: home.appendingPathComponent(".codex/hooks.json"))
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let hooks = try #require(object["hooks"] as? [String: Any])
+        #expect(hooks["SessionStart"] == nil, "ours is gone")
+        #expect(hooks["Stop"] != nil, "and nobody else's is")
+    }
+
+    /// `elsewhere` says the wired copy is not the one found now. With no copy found there is nothing to
+    /// compare against — and the settings window offers no button for `elsewhere` it cannot resolve, so
+    /// claiming it left a row reporting a problem with no way to act on it.
+    @Test("with no hook resolvable, a wired agent is not reported as wired elsewhere")
+    func unresolvableHookDoesNotClaimElsewhere() throws {
+        let (home, _) = try scratch("""
+        {"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/gone/notchling-hook --provider codex"}]}]}}
+        """)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        // A PATH with no `notchling-hook` on it, and no Homebrew prefix to fall back to.
+        let output = try run(["status", "--json"], home: home, path: "/usr/bin:/bin")
+        let data = try #require(output.data(using: .utf8))
+        let status = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(status["hookResolved"] as? String == "", "nothing was found")
+        let codex = try #require(status["codex"] as? [String: Any])
+        #expect(codex["hooks"] as? String == "wired")
     }
 }

@@ -23,6 +23,9 @@ struct HookEvent: Decodable {
     var pidStartedAt: Double?
     var cwd: String?
     var promptId: String?
+    /// Codex's name for the same thing `promptId` is Claude Code's name for: one turn. Read through
+    /// `turnIdentity` rather than directly, so nothing has to know which agent it came from.
+    var turnId: String?
     var agentId: String?
     var agentType: String?
     var agentTranscriptPath: String?
@@ -70,6 +73,12 @@ struct HookEvent: Decodable {
 
     /// How the session this event describes is keyed in the store, or nil when its agent is unknown.
     var sessionKey: SessionKey? { resolvedProvider.map { SessionKey(provider: $0, id: sessionId) } }
+
+    /// The turn this event belongs to, by whichever name its agent gives it.
+    ///
+    /// Nil only where the agent names no turn at all, which collapses anything keyed on it to one key
+    /// per session — and a per-turn cue keyed like that plays once and then never again.
+    var turnIdentity: String? { promptId ?? turnId }
 
     /// True when the event came from inside a subagent rather than the top-level session.
     var isSubagent: Bool { agentId != nil }

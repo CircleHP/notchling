@@ -48,9 +48,11 @@ The mascot is this project's own creature, not Anthropic's logo or mark.
 
 Every pixel of the mascot — the walking critter, the alert bar-and-dot, the tick,
 their colours and their frame timings — is original to this project and MIT
-licensed along with the rest of the code. It lives as ASCII rows in
-`Sources/Notchling/UI/Mascot/MascotArt.swift`, where `#` is a lit pixel, and
-`make-icon.py` renders the same grid into the app icon so the two cannot drift.
+licensed along with the rest of the code — as are the two marks that head a
+session row, one per agent, which evoke rather than copy and are nobody's logo.
+All of it lives as ASCII rows under `Sources/Notchling/UI/Mascot/`, where `#` is
+a lit pixel, and `make-icon.py` renders the mascot's own grid into the app icon
+so the two cannot drift.
 
 ## Third-party code
 

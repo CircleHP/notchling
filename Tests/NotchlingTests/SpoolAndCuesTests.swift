@@ -20,6 +20,16 @@ struct HookEventTests {
         #expect(event.date == Date(timeIntervalSince1970: 1_000_000))
     }
 
+    /// One turn, under whichever name its agent gives it. Nothing keyed on this can tell the agents
+    /// apart, and a per-turn key that collapses to one per session makes a per-turn cue fire once and
+    /// then never again for the life of the session.
+    @Test("a turn is identified whichever agent named it")
+    func turnIdentityCoversBothAgents() {
+        #expect(hookEvent("PreToolUse", ["promptId": "p1"]).turnIdentity == "p1")
+        #expect(codexEvent("PreToolUse", ["turnId": "t1"]).turnIdentity == "t1")
+        #expect(codexEvent("PreToolUse").turnIdentity == nil)
+    }
+
     @Test("absent optional fields decode to nil rather than failing")
     func minimalPayload() throws {
         let json = #"{"v":1,"ts":123,"event":"Stop","sessionId":"s"}"#

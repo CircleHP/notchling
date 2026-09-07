@@ -71,9 +71,26 @@ struct PanelPreferenceTests {
         }
     }
 
-    @Test("a sweep drops what it has when the numbers are off")
-    func tickClearsUsage() {
-        withPlanUsage(false) {
+    /// The store is handed the answer rather than asked to read the real preference: writing it here
+    /// would change the developer's own panel, and race every other test that reads it.
+    @Test("a sweep drops what it has when the numbers are off", arguments: [Provider.claude, .codex])
+    func tickClearsUsage(provider: Provider) {
+        let store = SessionStore(showsPlanUsage: { _ in false })
+        store.usage[provider] = UsageSnapshot(
+            fiveHour: UsageWindow(usedPercentage: 40, resetsAt: .now.addingTimeInterval(3600)),
+            sevenDay: nil,
+            updatedAt: .now
+        )
+
+        store.tick()
+        #expect(store.usage[provider] == nil,
+                "the panel draws whatever this holds, so hiding means emptying it")
+    }
+
+    /// What the store does by default, which is what an upgrade gets: the real preference, unwritten.
+    @Test("a store nobody told reads the preference itself")
+    func theDefaultIsThePreference() {
+        withPlanUsage(nil) {
             let store = SessionStore()
             store.usage[.claude] = UsageSnapshot(
                 fiveHour: UsageWindow(usedPercentage: 40, resetsAt: .now.addingTimeInterval(3600)),
@@ -82,24 +99,7 @@ struct PanelPreferenceTests {
             )
 
             store.tick()
-            #expect(store.usage[.claude] == nil,
-                    "the panel draws whatever this holds, so hiding means emptying it")
-        }
-    }
-
-    /// Turning Codex's off must clear what its rollouts already reported, not merely stop reading more.
-    @Test("a sweep drops the other agent's too")
-    func tickClearsCodexUsage() {
-        withPlanUsage(false, for: .codex) {
-            let store = SessionStore()
-            store.usage[.codex] = UsageSnapshot(
-                fiveHour: UsageWindow(usedPercentage: 77, resetsAt: .now.addingTimeInterval(3600)),
-                sevenDay: nil,
-                updatedAt: .now
-            )
-
-            store.tick()
-            #expect(store.usage[.codex] == nil)
+            #expect(store.usage[.claude] != nil, "an absent key means the numbers are shown")
         }
     }
 }

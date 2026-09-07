@@ -159,6 +159,14 @@ struct PreferencesView: View {
                     Divider()
                     codex
                 }
+                // Both switches, where the status report could not be read at all. It says nothing
+                // about whose usage lines somebody wants drawn, and which agents this machine has is
+                // exactly what is unknown — so neither switch is put under an agent's heading, and
+                // neither becomes unreachable because a script failed.
+                if wiring == nil, wiringError != nil {
+                    Divider()
+                    panel
+                }
             } else {
                 // No installer beside this build — a `swift run` rather than a bundle — so there are no
                 // agent blocks for these to sit under, and they would otherwise be unreachable.
@@ -296,8 +304,13 @@ struct PreferencesView: View {
     /// without one the script dies, and a button whose only outcome is an error is worse than none.
     private func codexHooksAction(_ codex: CodexWiring, resolved: String) -> WiringRow.Action? {
         switch codex.hooks {
+        // The command the report just read, rather than nothing: `wired` is also what a hook binary
+        // that has since gone reads as — there is then nothing to compare the entry against, and
+        // `uninstall` left to resolve one of its own dies instead of unwiring anything.
         case .wired:
-            .init(title: "Unwire") { perform { try AgentSetup.unwireHooks(provider: .codex) } }
+            .init(title: "Unwire") { [wired = codex.hookCommand] in
+                perform { try AgentSetup.unwireHooks(at: wired, provider: .codex) }
+            }
         case .none:
             resolved.isEmpty
                 ? nil
@@ -306,7 +319,9 @@ struct PreferencesView: View {
             resolved.isEmpty
                 ? nil
                 : .init(title: "Re-point") { [stale = codex.hookCommand] in
-                    perform { try AgentSetup.repointHooks(from: stale, provider: .codex) }
+                    perform {
+                        try AgentSetup.repointHooks(from: stale, resolved: resolved, provider: .codex)
+                    }
                 }
         case .plugin:
             nil
@@ -343,8 +358,12 @@ struct PreferencesView: View {
     /// is worse than no button.
     private func hooksAction(_ wiring: AgentWiring) -> WiringRow.Action? {
         switch wiring.hooks {
+        // As in Codex's row above: `wired` covers the case where no hook binary can be found now, so
+        // the entry to remove is handed over rather than left to the script to resolve.
         case .wired:
-            .init(title: "Unwire") { perform { try AgentSetup.unwireHooks() } }
+            .init(title: "Unwire") { [wired = wiring.hookCommand] in
+                perform { try AgentSetup.unwireHooks(at: wired) }
+            }
         case .none:
             wiring.hookResolved.isEmpty
                 ? nil
@@ -352,8 +371,8 @@ struct PreferencesView: View {
         case .elsewhere:
             wiring.hookResolved.isEmpty
                 ? nil
-                : .init(title: "Re-point") { [stale = wiring.hookCommand] in
-                    perform { try AgentSetup.repointHooks(from: stale) }
+                : .init(title: "Re-point") { [stale = wiring.hookCommand, resolved = wiring.hookResolved] in
+                    perform { try AgentSetup.repointHooks(from: stale, resolved: resolved) }
                 }
         // The plugin's own hooks are not ours to remove — but a settings.json copy alongside them is
         // exactly the double-reporting `setup` offers to undo, and hiding it makes a machine that is
@@ -445,7 +464,8 @@ struct PreferencesView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// Only where the agent blocks are not drawn. See the body.
+    /// Only where the agent blocks are not drawn, or where nothing could be read to draw them with.
+    /// See the body.
     private var panel: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Panel")
@@ -463,7 +483,8 @@ struct PreferencesView: View {
                 + "read. Per-session context stays."
         case .codex:
             "The 5-hour and 7-day numbers along the bottom of the panel, read out of the session's own "
-                + "record. Off, that record is not opened for them at all. Per-session context stays."
+                + "record. Off, nothing is drawn. Per-session context comes from the same record and "
+                + "stays."
         }
     }
 
