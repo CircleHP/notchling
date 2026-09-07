@@ -51,7 +51,9 @@ final class SessionStore {
     /// Display-ordered: attention-wanting first, then most recently active.
     private(set) var sessions: [Session] = []
 
-    var usage: UsageSnapshot?
+    /// Plan limits per agent, because they are separate accounts on separate plans measured against
+    /// separate windows. Never summed: two plans do not add up to one number.
+    var usage: [Provider: UsageSnapshot] = [:]
 
     /// A build sitting on disk that this process is not the one running. See `InstalledBuild`.
     var pendingVersion: String?
@@ -74,14 +76,27 @@ final class SessionStore {
     /// Fired when a session leaves the store, so state held elsewhere and keyed by it can go too.
     var onRemoved: ((Session) -> Void)?
 
-    private var index: [String: Session] = [:]
+    private var index: [SessionKey: Session] = [:]
 
     private let processEnvironment = ProcessEnvironmentReader()
 
     private let transcripts = TranscriptReader()
 
+    private let rollouts = CodexRolloutReader()
+
+    private let names = CodexNameReader()
+
+    /// The names an agent has derived for its sessions, by session id. One shared index answers for
+    /// every session at once, so it is held here rather than looked up per row.
+    private var derivedNames: [String: String] = [:]
+
+    /// The newest rate-limit reading each rollout has offered, arbitrated into one answer per agent the
+    /// same way Claude's status-line files are — the readings describe one account from several moments,
+    /// and the highest inside a window is the latest.
+    private var rolloutUsage: [SessionKey: UsageReading] = [:]
+
     /// pids already looked up, so a session with genuinely no terminal identity is not re-probed on
-    /// every sweep. Purged by `remove(id:)`: a pid that outlives its session blocks identity
+    /// every sweep. Purged by `remove(key:)`: a pid that outlives its session blocks identity
     /// resolution for whatever process macOS gives that number to next.
     private(set) var resolvedPIDs: Set<Int32> = []
 
@@ -90,14 +105,24 @@ final class SessionStore {
     /// they are worth pinning down deterministically.
     private let now: () -> Date
     private let readPendingVersion: () -> String?
+    private let readMetrics: @MainActor () -> [String: SessionMetrics]
+    /// Whether each agent's plan lines are wanted. Read on every sweep rather than captured once, so
+    /// the switch takes effect without the widget being restarted — and injectable for the same reason
+    /// the clock is: a test that had to write the real preference to pin this would be changing the
+    /// developer's own panel, and racing every other test that reads it.
+    private let showsPlanUsage: (Provider) -> Bool
     private var lastVersionCheck: Date?
 
     init(
         now: @escaping () -> Date = { Date.now },
-        pendingVersion: @escaping () -> String? = { InstalledBuild.pendingVersion() }
+        pendingVersion: @escaping () -> String? = { InstalledBuild.pendingVersion() },
+        metrics: @escaping @MainActor () -> [String: SessionMetrics] = { SessionMetricsReader.readAll() },
+        showsPlanUsage: @escaping (Provider) -> Bool = { PanelPreference.showsPlanUsage(for: $0) }
     ) {
         self.now = now
         self.readPendingVersion = pendingVersion
+        self.readMetrics = metrics
+        self.showsPlanUsage = showsPlanUsage
     }
 
     /// The only way a session leaves the store.
@@ -107,20 +132,48 @@ final class SessionStore {
     /// silently refused a terminal-identity probe: no tty, no focus URL, and a click that falls back
     /// to activating the app instead of jumping to the tab.
     @discardableResult
-    private func remove(id: String) -> Session? {
-        guard let session = index.removeValue(forKey: id) else { return nil }
-        if let pid = session.pid {
-            resolvedPIDs.remove(pid)
-            processEnvironment.forget(pid: pid)
-        }
-        transcripts.forget(sessionID: id)
+    private func remove(key: SessionKey) -> Session? {
+        guard let session = index.removeValue(forKey: key) else { return nil }
+        if let pid = session.pid { release(pid: pid) }
+        transcripts.forget(key: key)
+        rollouts.forget(key: key)
+        if rolloutUsage.removeValue(forKey: key) != nil { rebuildUsage(for: key.provider) }
         onRemoved?(session)
         return session
     }
 
-    /// Current state of one session by id. The panel freezes which rows it draws when it opens but keeps
+    /// Record which process a session belongs to, letting go of whatever pid it held before.
+    ///
+    /// A pid left behind in `resolvedPIDs` and the reader's cache after the session stopped using it
+    /// refuses a probe to whatever process macOS hands that number to next — the row appears and the
+    /// click quietly does nothing. `remove(key:)` releases the pid a session still holds, which covers
+    /// a session ending; this is what covers a session whose pid changes under it.
+    private func adopt(pid: Int32, startedAt: Double?, on session: inout Session) {
+        if let held = session.pid, held != pid {
+            release(pid: held)
+            session.pidStartedAt = nil
+        }
+        session.pid = pid
+
+        // The reporter's answer wins where there is one: the hook read it as a child of the agent, so
+        // the pid was certainly that process then. Reading it here is the fallback for a pid that
+        // arrived without one — the registry reports no start time — and is only as good as how
+        // promptly the app got to the event.
+        if let startedAt {
+            session.pidStartedAt = startedAt
+        } else if session.pidStartedAt == nil {
+            session.pidStartedAt = ProcessLiveness.startTime(of: pid)
+        }
+    }
+
+    private func release(pid: Int32) {
+        resolvedPIDs.remove(pid)
+        processEnvironment.forget(pid: pid)
+    }
+
+    /// Current state of one session. The panel freezes which rows it draws when it opens but keeps
     /// their *contents* live, and this is how a frozen row finds itself again.
-    func session(id: String) -> Session? { index[id] }
+    func session(key: SessionKey) -> Session? { index[key] }
 
     // MARK: - Aggregates
 
@@ -153,16 +206,29 @@ final class SessionStore {
     // MARK: - Hook events
 
     func apply(_ event: HookEvent) {
-        var session = index[event.sessionId] ?? Session(sessionID: event.sessionId)
+        // The watcher sets aside every event whose agent this build cannot name, so reaching here with
+        // an unknown one should be impossible. Belt and braces: the cost of being wrong is a session
+        // filed under the wrong agent, and every source keyed by it then answering for the wrong one.
+        guard let key = event.sessionKey else { return }
+        var session = index[key] ?? Session(sessionID: event.sessionId, provider: key.provider)
         let previous = session.state
 
-        if let pid = event.pid { session.pid = pid }
+        if let pid = event.pid { adopt(pid: pid, startedAt: event.pidStartedAt, on: &session) }
         if let cwd = event.cwd { session.cwd = cwd }
         // Terminal identity only ever arrives from the top-level session's own environment.
         if let url = event.focusURL { session.focusURL = url }
         if let warp = event.warpSessionId { session.warpSessionID = warp }
         if let term = event.termProgram { session.termProgram = term }
         if let host = event.hostBundleId { session.hostBundleID = host }
+        // Where an agent reports the model on every event, that is the freshest source there is — and
+        // for one with no status line it is the only one. Merged rather than assigned: the rest of the
+        // reading comes from elsewhere and must not be dropped on every event.
+        if let model = event.model, key.provider.capabilities.hasRollout {
+            var metrics = session.metrics ?? SessionMetrics(updatedAt: event.date)
+            metrics.model = model
+            metrics.updatedAt = max(metrics.updatedAt, event.date)
+            session.metrics = metrics
+        }
 
         var newState: SessionState?
 
@@ -190,7 +256,9 @@ final class SessionStore {
                 session.agents.removeAll()
                 session.toolCounts = [:]
                 session.currentTool = nil
+                session.activeCalls.removeAll()
                 session.needsYouMessage = nil
+                session.isCompacting = false
 
             case "UserPromptSubmit":
                 newState = .working
@@ -200,31 +268,52 @@ final class SessionStore {
                 session.toolCounts = [:]
                 session.currentTool = nil
                 session.currentToolSummary = nil
+                session.activeCalls.removeAll()
                 session.needsYouMessage = nil
                 session.lastMessage = nil
                 session.lastPrompt = event.userInput
                 session.lastProgressAt = event.date
-                session.currentPromptID = event.promptId
+                session.currentPromptID = event.turnIdentity
                 session.isStalled = false
                 // A new turn supersedes the last finish, so an unfinished turn cannot resurface it.
                 session.lastFinishedAt = nil
+                // A turn starting means the compaction before it is over, whether or not its
+                // `PostCompact` ever arrived. Left set, it disables stall detection for the rest of
+                // the session and pins every later turn's row to "compacting" — the same backstop
+                // `agents` gets above, for the same reason.
+                session.isCompacting = false
 
             case "PreToolUse":
                 newState = .working
                 session.needsYouMessage = nil
                 session.lastToolFailure = nil
-                // A new tool starting is proof the previous one finished, which is the only completion signal
-                // there is — `PostToolUse` stays unregistered because its payload can be megabytes.
-                session.recordCurrentToolDuration(endingAt: event.date)
+                beginTool(event, provider: key.provider, on: &session)
                 session.lastProgressAt = event.date
                 session.isStalled = false
-                if let promptID = event.promptId { session.currentPromptID = promptID }
-                if let tool = event.toolName {
-                    session.currentTool = tool
-                    session.currentToolSummary = event.toolSummary
-                    session.toolCounts[tool, default: 0] += 1
-                }
+                if let promptID = event.turnIdentity { session.currentPromptID = promptID }
                 if session.turnStartedAt == nil { session.turnStartedAt = event.date }
+
+            // Registered only for an agent that reports completions. It closes the call it names and,
+            // just as load-bearing, it is the only thing that can release attention: a permission
+            // prompt being answered produces no event of its own, so the next thing heard about a
+            // blocked session is the call finishing.
+            //
+            // Which call, though, matters. An agent that runs tools concurrently can finish an
+            // auto-approved one while a sibling's prompt is still on screen, and releasing on that
+            // would say "working" of a session that is waiting — with nothing left to raise it again.
+            //
+            // It cannot revive a finished turn either. Only a session actually waiting goes back to
+            // working — a completion arriving after `Stop` says nothing about whether the turn is over.
+            case "PostToolUse":
+                // Closed first, so the call that just finished is not counted among the ones still
+                // waiting on a person below.
+                endTool(event, on: &session)
+                if session.state == .needsYou, !session.hasBlockedCallInFlight {
+                    newState = .working
+                    session.needsYouMessage = nil
+                }
+                session.lastProgressAt = event.date
+                session.isStalled = false
 
             case "Notification":
                 newState = Self.state(forNotification: event, current: session.state)
@@ -232,16 +321,27 @@ final class SessionStore {
                     session.needsYouMessage = event.message
                     // Whatever this tool's elapsed time ends up being, it now includes a human deciding.
                     session.currentToolWasBlocked = true
+                    session.markActiveCallsBlocked()
                 }
 
             case "Stop":
                 newState = .done
                 session.isStalled = false
+                session.isCompacting = false
                 // The turn ending means every agent it spawned is finished, whatever we did or did not
                 // observe. This is the backstop for a `SubagentStop` that never arrived.
                 session.agents.removeAll()
                 session.lastFinishedAt = event.date
-                session.recordCurrentToolDuration(endingAt: event.date)
+                // Only where a call's end has to be inferred. Where the agent reports one, every call
+                // was timed by its own event — and `currentTool` deliberately still names the last one
+                // to finish, so this would charge that tool for the thinking that came after it and
+                // quietly raise the stall threshold it is judged against.
+                if !key.provider.capabilities.hasToolCompletionEvents {
+                    session.recordCurrentToolDuration(endingAt: event.date)
+                }
+                // A call still open when the turn ended has no end anyone reported, so it is dropped
+                // rather than credited with the time up to here.
+                session.activeCalls.removeAll()
                 session.lastProgressAt = nil
                 session.lastMessage = event.lastMessage
                 session.currentTool = nil
@@ -258,15 +358,49 @@ final class SessionStore {
             // recovers, and alerting every time trains the user to ignore the alert that matters. The
             // failure stays on the row until the next tool starts; if Claude cannot recover, the turn
             // ends and `StopFailure` raises it then.
+            //
+            // It does release attention, though. A tool that failed is a tool that *ran*, so whatever
+            // was being waited on has been answered — and a row left asking after that is asking for
+            // something nobody can give it.
             case "PostToolUseFailure":
+                endTool(event, on: &session)
+                if session.state == .needsYou, !session.hasBlockedCallInFlight {
+                    newState = .working
+                    session.needsYouMessage = nil
+                }
                 session.lastToolFailure = event.errorMessage ?? "tool failed"
                 session.currentTool = nil
                 session.currentToolSummary = nil
                 session.lastProgressAt = event.date
                 session.isStalled = false
 
+            // Esc. The turn is over and it did not finish, so not `.done`: that plays the success cue
+            // and drops the notch open to announce a result which was never produced.
+            case "Interrupt":
+                newState = .idle
+                session.needsYouMessage = nil
+                session.currentTool = nil
+                session.currentToolSummary = nil
+                session.activeCalls.removeAll()
+                session.agents.removeAll()
+                session.turnStartedAt = nil
+                session.lastProgressAt = nil
+                session.isStalled = false
+                session.isCompacting = false
+
+            // Compaction reports nothing while it runs and can take a while, which every signal the
+            // widget has makes indistinguishable from wedged.
+            case "PreCompact":
+                session.isCompacting = true
+                session.isStalled = false
+                session.lastProgressAt = event.date
+
+            case "PostCompact":
+                session.isCompacting = false
+                session.lastProgressAt = event.date
+
             case "SessionEnd":
-                remove(id: event.sessionId)
+                remove(key: key)
                 rebuild()
                 return
 
@@ -279,10 +413,13 @@ final class SessionStore {
             setState(newState, on: &session, evidenceAt: event.date)
         }
 
-        index[event.sessionId] = session
+        index[key] = session
         rebuild()
         notifyTransition(from: previous, session: session)
-        readTranscriptMarks(for: event.sessionId)
+        probeTerminalIdentity(for: key)
+        readTranscriptMarks(for: key)
+        readRollout(for: key)
+        readDerivedNames()
     }
 
     /// Apply an event that came from inside a subagent, and report whether it was one of those at all.
@@ -323,16 +460,32 @@ final class SessionStore {
 
         case "PreToolUse":
             agent.state = .working
-            // Same completion signal the session uses: the next tool starting proves the last one
-            // finished. Recorded against this agent's history, never its session's.
-            agent.recordCurrentToolDuration(endingAt: event.date)
+            // Recorded against this agent's history, never its session's.
+            beginTool(event, provider: session.provider, on: &agent)
             recordProgress()
-            if let tool = event.toolName {
-                agent.currentTool = tool
-                agent.currentToolSummary = event.toolSummary
-                agent.toolCounts[tool, default: 0] += 1
-            }
             sessionState = .working
+
+        // Consumed here rather than left to fall through: handled as the session's own, it would close
+        // one of the parent's calls on a child's completion, and the parent's row would name whatever
+        // was left.
+        //
+        // Both guards the session's own case carries apply here too. A completion cannot revive a child
+        // that has already stopped — a late one says nothing about whether it finished. And it is the
+        // only thing that can release attention a *child's* permission prompt asked for, because
+        // approving one produces no event: without this the session waits for the rest of its life, or
+        // until the child happens to start another tool.
+        case "PostToolUse":
+            // Closed before the release is judged, for the reason the session's own case gives: the
+            // call that just finished must not count itself among the ones still waiting.
+            endTool(event, on: &agent)
+            if !agent.hasBlockedCallInFlight {
+                if !agent.isFinished { agent.state = .working }
+                if session.state == .needsYou {
+                    sessionState = .working
+                    session.needsYouMessage = nil
+                }
+            }
+            recordProgress()
 
         case "Notification":
             if Self.state(forNotification: event, current: agent.state) == .needsYou {
@@ -342,10 +495,29 @@ final class SessionStore {
                 // message can be read.
                 session.needsYouMessage = event.message
                 session.currentToolWasBlocked = true
+                agent.markActiveCallsBlocked()
             }
 
+        // Compaction belongs to the session whoever's context is being compacted: the flag exists to
+        // stop a long quiet stretch reading as a stall, and a child's stretch is just as quiet. Consumed
+        // here rather than left to fall through so that a child's `agent_id` cannot be mistaken for the
+        // session's own; a child row has one line and it names a tool, so there is nothing to show on it.
+        case "PreCompact":
+            session.isCompacting = true
+            recordProgress()
+
+        case "PostCompact":
+            session.isCompacting = false
+            recordProgress()
+
         case "SubagentStop":
-            agent.recordCurrentToolDuration(endingAt: event.date)
+            // Only where a call's end has to be inferred, as in the session's own `Stop`: where the
+            // agent reports completions every call was timed by its own event, and `currentTool` still
+            // names the last one to finish.
+            if !session.provider.capabilities.hasToolCompletionEvents {
+                agent.recordCurrentToolDuration(endingAt: event.date)
+            }
+            agent.activeCalls.removeAll()
             agent.state = .done
             agent.finishedAt = event.date
             agent.currentTool = nil
@@ -367,7 +539,21 @@ final class SessionStore {
 
         // As above: a failed tool call is not a failed agent. The message is kept so the row can show
         // what went wrong, but the agent stays working and nothing turns red.
+        //
+        // "Stays working" has to be said rather than assumed, and that is the whole of this. Nothing
+        // else moves an agent out of `needsYou`, and the check at the end of this function re-asserts
+        // the session's from any running agent still in it — so an agent left waiting here pins its
+        // session to `needsYou`, and every event after it pins it again. A tool that failed is a tool
+        // that ran, which means the prompt was answered.
         case "PostToolUseFailure":
+            endTool(event, on: &agent)
+            if !agent.hasBlockedCallInFlight {
+                if !agent.isFinished { agent.state = .working }
+                if session.state == .needsYou {
+                    sessionState = .working
+                    session.needsYouMessage = nil
+                }
+            }
             agent.lastMessage = event.errorMessage ?? agent.lastMessage
             agent.currentTool = nil
             agent.currentToolSummary = nil
@@ -388,6 +574,36 @@ final class SessionStore {
         }
 
         return true
+    }
+
+    /// Record a tool call starting, by whichever route this agent affords.
+    ///
+    /// Where the agent reports completions the call is tracked under its own id and closed by its own
+    /// event. Where it does not, the next call starting is the only proof the last one finished — which
+    /// is an inference, and one that would be wrong for an agent running two tools at once, because it
+    /// credits the first tool's time to the moment the second began.
+    private func beginTool<Tracker: ToolTracking>(
+        _ event: HookEvent,
+        provider: Provider,
+        on tracker: inout Tracker
+    ) {
+        guard let tool = event.toolName else { return }
+        tracker.toolCounts[tool, default: 0] += 1
+
+        if provider.capabilities.hasToolCompletionEvents, let id = event.toolUseId {
+            tracker.beginCall(id: id, tool: tool, summary: event.toolSummary, at: event.date)
+            return
+        }
+
+        tracker.recordCurrentToolDuration(endingAt: event.date)
+        tracker.currentTool = tool
+        tracker.currentToolSummary = event.toolSummary
+    }
+
+    /// Close the call a completion event names, and nothing else.
+    private func endTool<Tracker: ToolTracking>(_ event: HookEvent, on tracker: inout Tracker) {
+        guard let id = event.toolUseId else { return }
+        tracker.endCall(id: id, at: event.date)
     }
 
     /// `Notification` is the only hook event whose meaning depends on a second field. Keeping that decision
@@ -424,14 +640,20 @@ final class SessionStore {
 
     // MARK: - Registry
 
+    /// Claude Code's own registry, so everything it describes is a Claude session — and, the part that
+    /// matters more than it reads, absence from a snapshot is evidence about *those* alone. A session
+    /// whose agent keeps no registry is missing from every snapshot by construction, and reaping on
+    /// that would delete it a grace period after it first appeared.
     func apply(registry entries: [RegistryEntry]) {
-        let seen = Set(entries.map(\.sessionId))
+        let provider = Provider.claude
+        let keys = entries.map { SessionKey(provider: provider, id: $0.sessionId) }
+        let seen = Set(keys)
 
-        for entry in entries {
-            var session = index[entry.sessionId] ?? Session(sessionID: entry.sessionId)
+        for (entry, key) in zip(entries, keys) {
+            var session = index[key] ?? Session(sessionID: entry.sessionId, provider: provider)
             let previous = session.state
 
-            session.pid = entry.pid
+            adopt(pid: entry.pid, startedAt: nil, on: &session)
             // A missing field means the registry did not report it, not that it was cleared.
             if let name = entry.name { session.name = name }
             if let cwd = entry.cwd { session.cwd = cwd }
@@ -482,19 +704,10 @@ final class SessionStore {
                 }
             }
 
-            index[entry.sessionId] = session
+            index[key] = session
 
-            // Not just for registry-discovered sessions: a hook event from a terminal that publishes
-            // no focus URL leaves us with no tty either, and the tty is what the iTerm/Terminal
-            // fallbacks match on.
-            if session.processCommand == nil, let pid = session.pid,
-               !resolvedPIDs.contains(pid)
-            {
-                resolvedPIDs.insert(pid)
-                resolveTerminalIdentity(for: entry.sessionId, pid: pid)
-            }
-
-            readTranscriptMarks(for: entry.sessionId)
+            probeTerminalIdentity(for: key)
+            readTranscriptMarks(for: key)
 
             notifyTransition(from: previous, session: session)
         }
@@ -504,22 +717,24 @@ final class SessionStore {
         // dropping the session then makes it flicker. After the grace period it is gone even if its
         // pid looks alive, because a pid can be recycled.
         let stamp = now()
-        for (id, var session) in index where !seen.contains(id) {
+        for (key, var session) in index where key.provider == provider && !seen.contains(key) {
             // A pid we have and cannot find is proof the session is gone. No pid at all is not: the
             // hook resolves it from `CLAUDE_PID` or a walk up the parent chain, and both come up
             // empty often enough. Reading that as death removed the grace period from the one case
             // it was written for — hook events arriving before the registry file exists.
-            if let pid = session.pid, !ProcessLiveness.isAlive(pid) {
-                remove(id: id)
+            if let pid = session.pid,
+               !ProcessLiveness.isSameProcess(pid: pid, startedAt: session.pidStartedAt)
+            {
+                remove(key: key)
                 continue
             }
             if let since = session.missingFromRegistrySince {
                 if stamp.timeIntervalSince(since) > Self.registryGrace {
-                    remove(id: id)
+                    remove(key: key)
                 }
             } else {
                 session.missingFromRegistrySince = stamp
-                index[id] = session
+                index[key] = session
             }
         }
 
@@ -529,65 +744,186 @@ final class SessionStore {
     /// The title Claude derives and the colour a user sets live only in the session's transcript, so
     /// they have to be read rather than received. Cheap in practice: the reader does nothing unless
     /// the file changed since it last looked, and it reads backwards from the end.
-    private func readTranscriptMarks(for sessionID: String) {
-        guard let session = index[sessionID] else { return }
+    private func readTranscriptMarks(for key: SessionKey) {
+        // The marks are records in Claude Code's own transcript format. Another agent's transcript is a
+        // different file saying different things: scanning it would read megabytes of somebody's
+        // conversation off disk on every change, looking for records that cannot be in it.
+        guard key.provider.capabilities.hasTranscriptMarks else { return }
+        guard let session = index[key] else { return }
         let path = session.transcriptPath
-            ?? session.cwd.flatMap { TranscriptReader.path(forSession: sessionID, cwd: $0) }
+            ?? session.cwd.flatMap { TranscriptReader.path(forSession: key.id, cwd: $0) }
         guard let path else { return }
 
-        transcripts.read(sessionID: sessionID, path: path) { [weak self] marks in
-            guard let self, var session = self.index[sessionID] else { return }
+        transcripts.read(key: key, path: path) { [weak self] marks in
+            guard let self, var session = self.index[key] else { return }
             if let custom = marks.customTitle { session.customTitle = custom }
             if let title = marks.title { session.aiTitle = title }
             if let colour = marks.colorName { session.colorName = colour }
-            self.index[sessionID] = session
+            self.index[key] = session
             self.rebuild()
         }
     }
 
-    private func resolveTerminalIdentity(for sessionID: String, pid: Int32) {
+    /// Ask the process behind a session which terminal it belongs to, at most once per pid.
+    ///
+    /// Driven by the session having a pid rather than by the registry reporting one. A hook event from
+    /// a terminal that publishes no focus URL leaves us with no tty either, and the tty is what the
+    /// iTerm2 and Terminal.app focus paths match on — so a provider with no registry at all still has
+    /// to reach this, or a click on its row can never do better than activating an app.
+    ///
+    /// Call it only after the session has been written to `index`: a pid already in the reader's cache
+    /// completes synchronously, and the answer has nowhere to land until the session is there.
+    private func probeTerminalIdentity(for key: SessionKey) {
+        guard let session = index[key], session.processCommand == nil,
+              let pid = session.pid, !resolvedPIDs.contains(pid)
+        else { return }
+
+        resolvedPIDs.insert(pid)
+        resolveTerminalIdentity(for: key, pid: pid)
+    }
+
+    /// The context percentage and the account's rate limits, for an agent that reports neither.
+    ///
+    /// Gated only on the agent having such a file, and deliberately not on the plan-usage switch. One
+    /// record carries both the account's limits and this session's context fill, and the switch has
+    /// never covered context — for Claude Code it stops a separate directory being read while the
+    /// status line goes on writing context regardless. Skipping the read here would take context with
+    /// it, so what the switch stops is the limits being published, which `rebuildUsage` decides — and
+    /// it is the only thing that decides it, so that turning the numbers back on shows what is true
+    /// now rather than what was true when they went off.
+    private func readRollout(for key: SessionKey) {
+        guard key.provider.capabilities.hasRollout,
+              let session = index[key],
+              let path = session.transcriptPath
+        else { return }
+
+        rollouts.read(key: key, path: path) { [weak self] rollout in
+            guard let self, var session = self.index[key] else { return }
+
+            if let reading = rollout.metrics {
+                var metrics = session.metrics ?? reading
+                metrics.contextUsedPercent = reading.contextUsedPercent
+                metrics.contextWindowSize = reading.contextWindowSize
+                if let effort = reading.effort { metrics.effort = effort }
+                metrics.updatedAt = max(metrics.updatedAt, reading.updatedAt)
+                session.metrics = metrics
+                self.index[key] = session
+            }
+
+            // Kept whatever the switch says, and published only through `rebuildUsage`, which is the
+            // one place that reads it. The reader never hands the same reading over twice, so
+            // discarding one here loses it for good: turn the numbers off for a few turns and back on,
+            // and what comes back is whatever was stored before — until that session's next turn, or
+            // for ever if it has gone idle.
+            if let usage = rollout.usage {
+                self.rolloutUsage[key] = usage
+                self.rebuildUsage(for: key.provider)
+            }
+
+            self.rebuild()
+        }
+    }
+
+    /// The name the agent derives for a session — the same kind of thing as the title Claude Code
+    /// records in a transcript, so it lands in the same field and `Session.displayName` orders it the
+    /// same way against a name a person chose.
+    ///
+    /// What is already known is applied first, because a session that arrived since the last read would
+    /// otherwise wait for the index to change again before being named.
+    private func readDerivedNames() {
+        applyDerivedNames()
+
+        guard let path = index.values
+            .first(where: { $0.provider.capabilities.hasNameIndex && $0.transcriptPath != nil })?
+            .transcriptPath
+            .flatMap(CodexNameReader.indexPath(forRollout:))
+        else { return }
+
+        names.read(path: path) { [weak self] names in
+            guard let self else { return }
+            self.derivedNames = names
+            self.applyDerivedNames()
+        }
+    }
+
+    private func applyDerivedNames() {
+        var changed = false
+        for (key, var session) in index where key.provider.capabilities.hasNameIndex {
+            guard let name = derivedNames[session.sessionID], session.aiTitle != name else { continue }
+            session.aiTitle = name
+            index[key] = session
+            changed = true
+        }
+        if changed { rebuild() }
+    }
+
+    /// One answer per agent out of however many of its sessions are reporting.
+    private func rebuildUsage(for provider: Provider) {
+        let readings = rolloutUsage.filter { $0.key.provider == provider }.map(\.value)
+        let fresh = showsPlanUsage(provider) ? UsageReader.arbitrate(readings) : nil
+        if usage[provider] != fresh { usage[provider] = fresh }
+    }
+
+    private func resolveTerminalIdentity(for key: SessionKey, pid: Int32) {
         processEnvironment.read(pid: pid) { [weak self] identity in
-            guard let self, var session = self.index[sessionID] else { return }
+            guard let self, var session = self.index[key] else { return }
+            // The probe answers about a number, and between asking and answering that number can come
+            // to mean another process. Storing the answer then would put a stranger's terminal on this
+            // session's row, and a click would go there.
+            guard session.pid == pid,
+                  ProcessLiveness.isSameProcess(pid: pid, startedAt: session.pidStartedAt)
+            else { return }
             if session.focusURL == nil { session.focusURL = identity.focusURL }
             if session.warpSessionID == nil { session.warpSessionID = identity.warpSessionID }
             if session.termProgram == nil { session.termProgram = identity.termProgram }
             if session.hostBundleID == nil { session.hostBundleID = identity.hostBundleID }
             if session.tty == nil { session.tty = identity.tty }
             if session.processCommand == nil { session.processCommand = identity.command }
-            self.index[sessionID] = session
+            self.index[key] = session
             self.rebuild()
         }
     }
 
     // MARK: - Periodic upkeep
 
-    /// Called on a slow timer. Deliberately does no I/O beyond `kill(pid, 0)` and a few small reads.
+    /// Called on a slow timer. Deliberately does no I/O beyond one `sysctl` per session and a few
+    /// small reads — both in-kernel, and neither growing with how busy a session is.
     func tick() {
         // Turned off means not read at all rather than read and hidden. Nobody is looking at the
         // result, and the scan still reports a usage file it cannot decode — a finding in the log
         // about a part of the widget the person has switched off.
-        let freshUsage = PanelPreference.showsPlanUsage ? UsageReader.read() : nil
-        if freshUsage != usage { usage = freshUsage }
+        let freshUsage = showsPlanUsage(.claude) ? UsageReader.read() : nil
+        if usage[.claude] != freshUsage { usage[.claude] = freshUsage }
+        // Read from what the rollouts already gave rather than opening them again: the switch can be
+        // turned off between sweeps, and the answer has to disappear when it is.
+        rebuildUsage(for: .codex)
 
         refreshPendingVersion()
+        readDerivedNames()
 
-        let metrics = SessionMetricsReader.readAll()
+        let metrics = readMetrics()
 
         var changed = false
         let stamp = now()
 
-        for (id, var session) in index {
-            if session.metrics != metrics[id] {
-                session.metrics = metrics[id]
-                index[id] = session
-                changed = true
+        for (key, var session) in index {
+            // The status line writes one file per session id and it is Claude Code's, so an agent that
+            // has none must not be handed a reading that merely shares an id with one of its sessions —
+            // and must not have its own reading wiped by the absence of one here either.
+            if session.provider.capabilities.hasStatusLineMetrics {
+                let reading = metrics[session.sessionID]
+                if session.metrics != reading {
+                    session.metrics = reading
+                    index[key] = session
+                    changed = true
+                }
             }
 
             let threshold = session.stallThreshold(absolute: Self.stallThreshold)
             let stalled = (session.stalledFor(now: stamp) ?? 0) > threshold
             if stalled != session.isStalled {
                 session.isStalled = stalled
-                index[id] = session
+                index[key] = session
                 changed = true
                 if stalled { onStalled?(session) }
             }
@@ -600,17 +936,21 @@ final class SessionStore {
             }
             if !expired.isEmpty {
                 for agentID in expired.keys { session.agents.removeValue(forKey: agentID) }
-                index[id] = session
+                index[key] = session
                 changed = true
             }
 
             if session.state == .done, stamp.timeIntervalSince(session.stateChangedAt) > Self.doneDecay {
                 setState(.idle, on: &session, evidenceAt: stamp)
-                index[id] = session
+                index[key] = session
                 changed = true
             }
-            if let pid = session.pid, !ProcessLiveness.isAlive(pid) {
-                remove(id: id)
+            // Not merely alive: the same process. A recycled pid answers `kill(pid, 0)` and would keep
+            // a dead session on the panel for as long as something unrelated held the number.
+            if let pid = session.pid,
+               !ProcessLiveness.isSameProcess(pid: pid, startedAt: session.pidStartedAt)
+            {
+                remove(key: key)
                 changed = true
             }
         }
@@ -637,6 +977,10 @@ final class SessionStore {
         guard session.state != newState else { return }
         session.state = newState
         session.stateChangedAt = now()
+        // Every route out of `needsYou` runs through here, so the clock is started and stopped in one
+        // place rather than in each of them. From the evidence rather than from now: it measures how
+        // long the prompt has been up, which a delayed drain must not shorten.
+        session.attentionSince = newState == .needsYou ? evidenceAt : nil
     }
 
     private func notifyTransition(from previous: SessionState, session: Session) {
@@ -669,5 +1013,31 @@ enum ProcessLiveness {
         guard pid > 0 else { return false }
         if kill(pid, 0) == 0 { return true }
         return errno == EPERM
+    }
+
+    /// When the process behind a pid started, as epoch seconds, or nil when there is no such process.
+    static func startTime(of pid: Int32) -> Double? {
+        guard pid > 0 else { return nil }
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        let started = info.kp_proc.p_starttime
+        guard started.tv_sec > 0 else { return nil }
+        return Double(started.tv_sec) + Double(started.tv_usec) / 1_000_000
+    }
+
+    /// Whether `pid` still means the process that was seen starting at `startedAt`.
+    ///
+    /// Compared to the second rather than exactly: the value travels through JSON, and two processes
+    /// cannot plausibly share a pid inside one second — the kernel has to work through the whole pid
+    /// space before handing that number out again.
+    ///
+    /// A nil `startedAt` is not a mismatch. It means nothing was recorded to compare against, so this
+    /// can only answer liveness, which is all the app could do before start times were carried at all.
+    static func isSameProcess(pid: Int32, startedAt: Double?) -> Bool {
+        guard let current = startTime(of: pid) else { return false }
+        guard let startedAt else { return true }
+        return abs(current - startedAt) < 1
     }
 }

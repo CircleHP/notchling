@@ -35,13 +35,25 @@ enum SessionKind: String, Codable, Sendable {
     case bg
 }
 
-/// One Claude Code session, merged from the registry at `~/.claude/sessions/<pid>.json` and our
-/// hook event spool.
+/// One agent session in a terminal, merged from whatever sources its provider has — for Claude Code the
+/// registry at `~/.claude/sessions/<pid>.json` and our hook event spool.
 struct Session: Identifiable, Equatable, ToolTracking {
     let sessionID: String
-    var id: String { sessionID }
+    /// Which agent CLI this session belongs to. Fixed at creation: a session does not change agent.
+    let provider: Provider
+
+    /// How this session is keyed everywhere it is stored. See `SessionKey`.
+    var key: SessionKey { SessionKey(provider: provider, id: sessionID) }
+    var id: SessionKey { key }
 
     var pid: Int32?
+    /// When the process behind `pid` started, as epoch seconds, when it is known.
+    ///
+    /// A pid alone is not an identity: macOS reuses them, and `kill(pid, 0)` cannot tell the process
+    /// that was there from the one holding the number now. Nil means unrecorded, which is read as "no
+    /// second opinion" rather than as a mismatch — a hook from an older install sends no start time,
+    /// and treating that as a stale pid would take terminal identity from every session it feeds.
+    var pidStartedAt: Double?
     var name: String?
     var cwd: String?
     var kind: SessionKind = .interactive
@@ -63,6 +75,8 @@ struct Session: Identifiable, Equatable, ToolTracking {
     /// Set when the current tool sat behind a permission prompt. Its elapsed time then includes however
     /// long a human took to answer, which is not a fact about the tool, so it is not recorded.
     var currentToolWasBlocked = false
+    /// See `ActiveCall`. Populated only for an agent that reports a tool finishing.
+    var activeCalls: [String: ActiveCall] = [:]
     var turnStartedAt: Date?
     var lastMessage: String?
     var needsYouMessage: String?
@@ -91,6 +105,20 @@ struct Session: Identifiable, Equatable, ToolTracking {
     var currentPromptID: String?
     var isStalled = false
 
+    /// When this session started asking for attention, while it still is.
+    ///
+    /// Its own clock rather than `stateChangedAt`, which a registry scan can move: what a person wants
+    /// to know is how long the prompt has been up, because no agent reports that they answered it.
+    var attentionSince: Date?
+
+    /// Set between something in this session saying it is compacting its context and saying it has
+    /// finished — the session's own thread or one of its agents.
+    ///
+    /// Whose context it is does not matter, because of the one thing the flag is for: compaction is a
+    /// long quiet stretch, and every signal the widget has makes it look exactly like a wedged session.
+    /// A child's silence is just as quiet as the parent's.
+    var isCompacting = false
+
     var focusURL: String?
     var warpSessionID: String?
     var termProgram: String?
@@ -117,8 +145,11 @@ struct Session: Identifiable, Equatable, ToolTracking {
     /// busy. Used only to break a stuck `needsYou`.
     var registryIdleSince: Date?
 
-    init(sessionID: String) {
+    /// `provider` defaults to Claude Code because that is what its absence *means* rather than as a
+    /// convenience: a spool event carrying no provider was written by a hook that knew about no other.
+    init(sessionID: String, provider: Provider = .claude) {
         self.sessionID = sessionID
+        self.provider = provider
     }
 
     /// A name someone chose beats one anything derived, and `notchling-1a` identifies nothing when
@@ -174,7 +205,9 @@ struct Session: Identifiable, Equatable, ToolTracking {
     /// completion signal is `PostToolUse` and that is deliberately not registered. So callers should
     /// report the elapsed time rather than claim the session is stuck.
     func stalledFor(now: Date = .now) -> TimeInterval? {
-        guard state == .working, let lastProgressAt else { return nil }
+        // Compaction is quiet for as long as it takes, and is not a stall. Nothing else can tell the
+        // two apart, which is why the flag exists.
+        guard state == .working, !isCompacting, let lastProgressAt else { return nil }
         return now.timeIntervalSince(lastProgressAt)
     }
 
@@ -198,6 +231,9 @@ struct Session: Identifiable, Equatable, ToolTracking {
             // While agents are out, the main thread is orchestrating, not running the tool the row would
             // otherwise name. `Task · 3/5 done` describes what is happening; `Task` on its own does not.
             if let agentSummary { return agentSummary }
+            // Ahead of the tool name, which by now stopped reporting long enough ago to read as stuck,
+            // and behind the agent summary, which says more.
+            if isCompacting { return "compacting" }
             // Between a failed tool and whatever Claude tries next there is nothing else to say, and
             // saying nothing would hide the failure entirely.
             guard let currentTool else { return lastToolFailure }

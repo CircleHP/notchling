@@ -90,7 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
 
             if !newState.isNotifiable {
-                self.cues.clearDedupe(for: session.sessionID)
+                self.cues.clearDedupe(for: session.key)
             }
             self.cues.play(for: session, newState: newState)
 
@@ -109,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Otherwise every session the widget has ever seen keeps an entry, and a recycled session id
         // would inherit the previous one's dedupe state.
         store.onRemoved = { [weak self] session in
-            self?.cues.clearDedupe(for: session.sessionID)
+            self?.cues.clearDedupe(for: session.key)
         }
 
         store.onStalled = { [weak self] session in

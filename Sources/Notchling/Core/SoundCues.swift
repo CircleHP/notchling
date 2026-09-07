@@ -11,7 +11,7 @@ import AppKit
 final class SoundCues {
     /// The last state each session was announced in, so re-entering a state without leaving it first
     /// — a second permission prompt in the same turn, say — stays quiet.
-    private var lastPlayed: [String: SessionState] = [:]
+    private var lastPlayed: [SessionKey: SessionState] = [:]
 
     /// Turns already announced as stalled, keyed session+turn.
     private var stallPlayed: Set<String> = []
@@ -26,8 +26,8 @@ final class SoundCues {
 
     func play(for session: Session, newState: SessionState) {
         guard newState.isNotifiable else { return }
-        guard lastPlayed[session.sessionID] != newState else { return }
-        lastPlayed[session.sessionID] = newState
+        guard lastPlayed[session.key] != newState else { return }
+        lastPlayed[session.key] = newState
 
         switch newState {
         case .needsYou: play("Submarine")
@@ -40,7 +40,7 @@ final class SoundCues {
     /// Keyed by turn rather than by session: one long turn should say so once, and the *next* turn
     /// stalling is genuinely new information.
     func playStalled(for session: Session) {
-        let key = "\(session.sessionID)|\(session.currentPromptID ?? "-")"
+        let key = "\(session.key.storageKey)|\(session.currentPromptID ?? "-")"
         guard !stallPlayed.contains(key) else { return }
         stallPlayed.insert(key)
 
@@ -50,7 +50,7 @@ final class SoundCues {
     }
 
     /// Called when a session leaves a notifiable state, so the next entry sounds again.
-    func clearDedupe(for sessionID: String) {
-        lastPlayed.removeValue(forKey: sessionID)
+    func clearDedupe(for key: SessionKey) {
+        lastPlayed.removeValue(forKey: key)
     }
 }

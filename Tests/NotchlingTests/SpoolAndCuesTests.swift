@@ -20,6 +20,16 @@ struct HookEventTests {
         #expect(event.date == Date(timeIntervalSince1970: 1_000_000))
     }
 
+    /// One turn, under whichever name its agent gives it. Nothing keyed on this can tell the agents
+    /// apart, and a per-turn key that collapses to one per session makes a per-turn cue fire once and
+    /// then never again for the life of the session.
+    @Test("a turn is identified whichever agent named it")
+    func turnIdentityCoversBothAgents() {
+        #expect(hookEvent("PreToolUse", ["promptId": "p1"]).turnIdentity == "p1")
+        #expect(codexEvent("PreToolUse", ["turnId": "t1"]).turnIdentity == "t1")
+        #expect(codexEvent("PreToolUse").turnIdentity == nil)
+    }
+
     @Test("absent optional fields decode to nil rather than failing")
     func minimalPayload() throws {
         let json = #"{"v":1,"ts":123,"event":"Stop","sessionId":"s"}"#
@@ -42,6 +52,37 @@ struct HookEventTests {
         #expect(throws: (any Error).self) {
             try JSONDecoder().decode(HookEvent.self, from: Data(json.utf8))
         }
+    }
+
+    /// v1 predates providers, so its silence is the answer rather than a gap to fill in.
+    @Test("an event with no provider is a Claude event")
+    func versionOneMeansClaude() throws {
+        let json = #"{"v":1,"ts":1,"event":"Stop","sessionId":"s"}"#
+        let event = try JSONDecoder().decode(HookEvent.self, from: Data(json.utf8))
+        #expect(event.resolvedProvider == .claude)
+        #expect(event.sessionKey == SessionKey(provider: .claude, id: "s"))
+    }
+
+    @Test("an event that names an agent is keyed under it")
+    func versionTwoNamesItsAgent() throws {
+        let json = #"{"v":2,"ts":1,"event":"Stop","sessionId":"s","provider":"codex"}"#
+        let event = try JSONDecoder().decode(HookEvent.self, from: Data(json.utf8))
+        #expect(event.resolvedProvider == .codex)
+        #expect(event.sessionKey == SessionKey(provider: .codex, id: "s"))
+    }
+
+    /// The failure this rule exists to prevent: filed as Claude, a third agent's session would take a
+    /// Claude row and send the transcript reader into `~/.claude/projects` after a file that is not
+    /// there. It decodes so that it can be *refused* — throwing instead would make an unsupported
+    /// agent indistinguishable from a corrupt file.
+    @Test("an agent this build does not know is not silently read as Claude", arguments: [
+        #"{"v":2,"ts":1,"event":"Stop","sessionId":"s","provider":"gemini"}"#,
+        #"{"v":2,"ts":1,"event":"Stop","sessionId":"s"}"#,
+    ])
+    func unknownAgentIsRefused(json: String) throws {
+        let event = try JSONDecoder().decode(HookEvent.self, from: Data(json.utf8))
+        #expect(event.resolvedProvider == nil)
+        #expect(event.sessionKey == nil)
     }
 
     @Test("isSubagent is driven by the presence of an agent id")
@@ -86,7 +127,7 @@ struct HookSpoolWatcherTests {
         writeEvent("001-good.json", #"{"v":1,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
         writeEvent("002-broken.json", "{{{", in: dir)
         // What an upgrade produces: the new hook is already writing a schema this build predates.
-        writeEvent("003-newer.json", #"{"v":2,"ts":2,"event":"Stop","sessionId":"s"}"#, in: dir)
+        writeEvent("003-newer.json", #"{"v":3,"ts":2,"event":"Stop","sessionId":"s"}"#, in: dir)
 
         var received: [String] = []
         let watcher = HookSpoolWatcher(directory: dir) { received = $0.map(\.event) }
@@ -103,12 +144,38 @@ struct HookSpoolWatcherTests {
                 "deleting these would take the widget silent with nothing left to explain why")
     }
 
+    /// A v2 event naming an agent this build knows is applied; one naming an agent it does not know is
+    /// set aside beside a corrupt file, because that is what it is — unreadable, not unimportant.
+    @Test("the spool applies the agents it knows and sets aside the ones it does not")
+    func drainsByAgent() {
+        let dir = makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        writeEvent("001-claude.json", #"{"v":1,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
+        writeEvent("002-codex.json",
+                   #"{"v":2,"ts":2,"event":"Stop","sessionId":"s","provider":"codex"}"#, in: dir)
+        writeEvent("003-other.json",
+                   #"{"v":2,"ts":3,"event":"Stop","sessionId":"s","provider":"gemini"}"#, in: dir)
+
+        var received: [SessionKey] = []
+        let watcher = HookSpoolWatcher(directory: dir) { received = $0.compactMap(\.sessionKey) }
+        watcher.drain()
+
+        #expect(received == [
+            SessionKey(provider: .claude, id: "s"),
+            SessionKey(provider: .codex, id: "s"),
+        ], "the same id under two agents is two sessions, and the third is not guessed at")
+
+        let failed = dir.appendingPathComponent("failed")
+        #expect(try! FileManager.default.contentsOfDirectory(atPath: failed.path) == ["003-other.json"])
+    }
+
     @Test("draining again does not re-read what was set aside")
     func setAsideIsNotDrainedAgain() {
         let dir = makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        writeEvent("001-newer.json", #"{"v":2,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
+        writeEvent("001-newer.json", #"{"v":3,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
 
         var calls = 0
         let watcher = HookSpoolWatcher(directory: dir) { _ in calls += 1 }
@@ -131,7 +198,7 @@ struct HookSpoolWatcherTests {
             writeEvent(String(format: "%04d-old.json", index), "{}", in: failed)
         }
 
-        writeEvent("999-newer.json", #"{"v":2,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
+        writeEvent("999-newer.json", #"{"v":3,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
 
         let watcher = HookSpoolWatcher(directory: dir) { _ in }
         watcher.drain()
@@ -155,7 +222,7 @@ struct HookSpoolWatcherTests {
         try! fileManager.setAttributes([.posixPermissions: 0o500], ofItemAtPath: failed.path)
         defer { try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: failed.path) }
 
-        writeEvent("001-newer.json", #"{"v":2,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
+        writeEvent("001-newer.json", #"{"v":3,"ts":1,"event":"Stop","sessionId":"s"}"#, in: dir)
 
         let watcher = HookSpoolWatcher(directory: dir) { _ in }
         watcher.drain()
@@ -255,7 +322,7 @@ struct SoundCuesTests {
         let cues = SoundCues { played.append($0) }
 
         cues.play(for: session(), newState: .needsYou)
-        cues.clearDedupe(for: "s")
+        cues.clearDedupe(for: SessionKey(provider: .claude, id: "s"))
         cues.play(for: session(), newState: .needsYou)
         #expect(played == ["Submarine", "Submarine"])
     }

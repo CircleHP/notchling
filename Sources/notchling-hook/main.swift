@@ -19,6 +19,13 @@ import os
 let log = Logger(subsystem: "local.notchling", category: "hook")
 
 let schemaVersion = 1
+
+/// The spool format for an event that has to name the agent it came from.
+///
+/// v1 says Claude by its silence, so naming one needs a new version rather than a new optional field:
+/// a build that predates providers ignores what it does not know, and would read a Codex event as a
+/// Claude one — then go looking for its transcript under `~/.claude/projects`.
+let providerSchemaVersion = 2
 let spoolCap = 500
 let maxMessageLength = 400
 let maxToolSummaryLength = 120
@@ -27,6 +34,47 @@ let maxToolSummaryLength = 120
 func giveUp() -> Never {
     exit(0)
 }
+
+/// Which agent's hooks are calling.
+///
+/// Passed in rather than read off the payload, because there is nothing in a payload to read: Codex's
+/// wire event names are PascalCase and identical to Claude's for every event they share, and its field
+/// names match too. The installer writes the answer into the command it registers.
+enum Agent: String {
+    case claude
+    case codex
+
+    /// What the process is called, for the walk up the parent chain. Matched against `p_comm`, which
+    /// is `claude` and `codex` respectively.
+    var executableName: String {
+        switch self {
+        case .claude: "claude"
+        case .codex: "codex"
+        }
+    }
+}
+
+let agent: Agent = {
+    let flag = "--provider"
+    var arguments = CommandLine.arguments.dropFirst().makeIterator()
+    var named: String?
+    while let argument = arguments.next() {
+        if argument == flag {
+            named = arguments.next()
+        } else if argument.hasPrefix("\(flag)=") {
+            named = String(argument.dropFirst(flag.count + 1))
+        }
+    }
+
+    guard let named else { return .claude }
+    guard let agent = Agent(rawValue: named) else {
+        // Recording it as Claude would put another agent's session on a Claude row, and inventing a
+        // name the app does not know only gets the event set aside. Saying so is the useful failure.
+        log.error("unknown \(flag, privacy: .public) \(named, privacy: .public); nothing was recorded")
+        giveUp()
+    }
+    return agent
+}()
 
 let stdinData = FileHandle.standardInput.readDataToEndOfFile()
 guard !stdinData.isEmpty,
@@ -50,8 +98,40 @@ func truncated(_ value: String?, to limit: Int) -> String? {
     return String(flat.prefix(limit)) + "…"
 }
 
-guard let event = string("hook_event_name"), let sessionID = string("session_id") else {
+guard let wireEvent = string("hook_event_name"), let sessionID = string("session_id") else {
     giveUp()
+}
+
+/// The spool has one vocabulary and it is ours, not any agent's. Codex's names already match Claude's
+/// wherever the meaning matches, so exactly one needs translating.
+///
+/// `PermissionRequest` is Codex's dedicated event for a tool waiting on a person, which is what Claude
+/// reports as a `Notification` carrying `permission_prompt`. Normalising it here rather than teaching
+/// the store a second name for one meaning is what stops a missed case failing silently: an event the
+/// store does not recognise reaches `default:` and the row simply never asks for attention — which is
+/// the one thing this widget exists to do.
+///
+/// The events with no Claude equivalent — `PostToolUse`, `Interrupt`, `PreCompact`, `PostCompact` —
+/// keep their own names, there being nothing to normalise them to.
+let event: String = switch (agent, wireEvent) {
+case (.codex, "PermissionRequest"): "Notification"
+default: wireEvent
+}
+
+/// Codex has no `notification_type`, because `PermissionRequest` *is* the permission case. The field
+/// it normalises onto has to be filled in here rather than read.
+let isCodexPermissionRequest = agent == .codex && wireEvent == "PermissionRequest"
+
+let notificationType: String? = isCodexPermissionRequest ? "permission_prompt" : string("notification_type")
+
+/// Codex has no `message` either. What it does have, on a `PermissionRequest` alone, is the question it
+/// is putting to the user — in `tool_input.description`, in its own words, written to be read by a
+/// person. That is what a notification's message is for, so it goes there rather than being derived
+/// from the tool name.
+let message: String? = if isCodexPermissionRequest {
+    (root["tool_input"] as? [String: Any])?["description"] as? String
+} else {
+    string("message")
 }
 
 /// A one-line gloss of what the tool is about to do, so the notch can show "Bash · npm test" instead
@@ -87,15 +167,18 @@ func toolSummary(toolName: String?, toolInput: [String: Any]?) -> String? {
 let environment = ProcessInfo.processInfo.environment
 
 /// `CLAUDE_PID` is exported by Claude Code for its subprocesses. The parent walk covers a future
-/// version that stops exporting it: hooks are spawned through a shell, so Claude is this process's
-/// parent or grandparent.
-func resolveClaudePID() -> Int32? {
-    if let raw = environment["CLAUDE_PID"], let pid = Int32(raw) { return pid }
+/// version that stops exporting it, and is the only route under any other agent: hooks are spawned
+/// through a shell, so the agent is this process's parent or grandparent.
+func resolveAgentPID() -> Int32? {
+    // Claude Code's own export, and meaningless under anything else — a Codex hook that inherited a
+    // stale `CLAUDE_PID` would name a Claude process as the owner of a Codex session, and every row
+    // built on it would point at the wrong terminal.
+    if agent == .claude, let raw = environment["CLAUDE_PID"], let pid = Int32(raw) { return pid }
 
     var candidate = getppid()
     for _ in 0 ..< 4 {
         guard candidate > 1 else { return nil }
-        if processName(of: candidate)?.contains("claude") == true { return candidate }
+        if processName(of: candidate)?.contains(agent.executableName) == true { return candidate }
         guard let parent = parentPID(of: candidate) else { return nil }
         candidate = parent
     }
@@ -115,6 +198,19 @@ func parentPID(of pid: Int32) -> Int32? {
     sysctlProcInfo(pid)?.kp_eproc.e_ppid
 }
 
+/// When the process behind a pid started, as epoch seconds.
+///
+/// Sent alongside the pid because a pid on its own is not an identity: macOS reuses them, and by the
+/// time the app drains this event — which can be minutes, if it was not running — the number may
+/// belong to something else entirely. Read here rather than there because here it cannot be wrong:
+/// this binary is a child of the agent, so the pid is certainly that process at this moment.
+func startTime(of pid: Int32) -> Double? {
+    guard let info = sysctlProcInfo(pid) else { return nil }
+    let started = info.kp_proc.p_starttime
+    guard started.tv_sec > 0 else { return nil }
+    return Double(started.tv_sec) + Double(started.tv_usec) / 1_000_000
+}
+
 func processName(of pid: Int32) -> String? {
     guard var info = sysctlProcInfo(pid) else { return nil }
     // No force unwrap: this binary runs on `PreToolUse`, in the hot path of every tool call in every
@@ -131,7 +227,7 @@ func processName(of pid: Int32) -> String? {
 // which it is. Unsafe in name only here: this binary reads stdin, writes one file and exits, on a
 // single thread throughout.
 nonisolated(unsafe) var out: [String: Any] = [
-    "v": schemaVersion,
+    "v": agent == .claude ? schemaVersion : providerSchemaVersion,
     "ts": Date().timeIntervalSince1970,
     "event": event,
     "sessionId": sessionID,
@@ -140,6 +236,9 @@ nonisolated(unsafe) var out: [String: Any] = [
 func put(_ key: String, _ value: Any?) {
     if let value { out[key] = value }
 }
+
+// Only on the version that carries one: see `providerSchemaVersion`.
+if agent != .claude { put("provider", agent.rawValue) }
 
 put("cwd", string("cwd"))
 put("promptId", string("prompt_id"))
@@ -154,9 +253,14 @@ put("agentTranscriptPath", string("agent_transcript_path"))
 // conversation and the colour set with `/color`. Forwarded rather than re-derived from cwd and id.
 put("transcriptPath", string("transcript_path"))
 
-put("notificationType", string("notification_type"))
-put("message", truncated(string("message"), to: maxMessageLength))
+put("notificationType", notificationType)
+put("message", truncated(message, to: maxMessageLength))
 put("toolName", string("tool_name"))
+// Turn and call identity. The only way to tell one of several concurrent tool calls from another, and
+// a spool event is the only place they are ever written down.
+put("turnId", string("turn_id"))
+put("toolUseId", string("tool_use_id"))
+put("model", string("model"))
 put("toolSummary", toolSummary(toolName: string("tool_name"), toolInput: root["tool_input"] as? [String: Any]))
 put("lastMessage", truncated(string("last_assistant_message"), to: maxMessageLength))
 // `UserPromptSubmit` calls this `prompt`; `user_input` is only a fallback. The distinction matters because
@@ -170,7 +274,9 @@ put("reason", string("reason"))
 // wrong key fails silently: the row shows `failed` and never says why.
 put("errorMessage", truncated(string("error") ?? string("error_message"), to: maxMessageLength))
 
-put("pid", resolveClaudePID().map { Int($0) })
+let agentPID = resolveAgentPID()
+put("pid", agentPID.map { Int($0) })
+put("pidStartedAt", agentPID.flatMap(startTime(of:)))
 put("focusURL", environment["WARP_FOCUS_URL"])
 put("warpSessionId", environment["WARP_TERMINAL_SESSION_UUID"])
 put("termProgram", environment["TERM_PROGRAM"])

@@ -79,7 +79,9 @@ final class HookSpoolWatcher {
             let url = directory.appendingPathComponent(name)
             guard let data = try? Data(contentsOf: url),
                   let event = try? decoder.decode(HookEvent.self, from: data),
-                  event.v == HookEvent.schemaVersion
+                  // Covers both halves of the contract: a schema version this build does not know,
+                  // and a version that does name an agent but names one it has never heard of.
+                  event.resolvedProvider != nil
             else {
                 unreadable.append(url)
                 continue

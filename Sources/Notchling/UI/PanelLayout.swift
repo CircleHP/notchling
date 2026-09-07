@@ -14,24 +14,24 @@ import Foundation
 /// One line in the panel.
 enum PanelRow: Identifiable, Equatable {
     case session(Session)
-    case agent(sessionID: String, agent: SubagentActivity)
+    case agent(sessionKey: SessionKey, agent: SubagentActivity)
     /// The agents of one session that did not fit.
-    case agentOverflow(sessionID: String, count: Int)
+    case agentOverflow(sessionKey: SessionKey, count: Int)
 
     var id: String {
         switch self {
-        case let .session(session): "s:\(session.sessionID)"
-        case let .agent(sessionID, agent): "a:\(sessionID):\(agent.agentID)"
-        case let .agentOverflow(sessionID, _): "o:\(sessionID)"
+        case let .session(session): "s:\(session.key.storageKey)"
+        case let .agent(sessionKey, agent): "a:\(sessionKey.storageKey):\(agent.agentID)"
+        case let .agentOverflow(sessionKey, _): "o:\(sessionKey.storageKey)"
         }
     }
 
     /// The session this row belongs to — itself, or the one that spawned it.
-    var sessionID: String {
+    var sessionKey: SessionKey {
         switch self {
-        case let .session(session): session.sessionID
-        case let .agent(sessionID, _): sessionID
-        case let .agentOverflow(sessionID, _): sessionID
+        case let .session(session): session.key
+        case let .agent(sessionKey, _): sessionKey
+        case let .agentOverflow(sessionKey, _): sessionKey
         }
     }
 
@@ -102,10 +102,10 @@ struct PanelLayout {
         let visible = agents.count > slots ? slots - 1 : agents.count
 
         var rows: [PanelRow] = agents.prefix(visible).map {
-            .agent(sessionID: session.sessionID, agent: $0)
+            .agent(sessionKey: session.key, agent: $0)
         }
         if agents.count > visible {
-            rows.append(.agentOverflow(sessionID: session.sessionID, count: agents.count - visible))
+            rows.append(.agentOverflow(sessionKey: session.key, count: agents.count - visible))
         }
         return rows
     }
@@ -115,7 +115,7 @@ struct PanelLayout {
         guard rows.indices.contains(index) else { return false }
         let next = index + 1
         guard rows.indices.contains(next) else { return true }
-        return rows[next].isSession || rows[next].sessionID != rows[index].sessionID
+        return rows[next].isSession || rows[next].sessionKey != rows[index].sessionKey
     }
 
     /// How many sessions this layout accounts for, drawn or not.

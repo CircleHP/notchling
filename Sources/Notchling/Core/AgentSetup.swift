@@ -1,5 +1,5 @@
 //
-//  What `notchling-hooks` has wired, and the four buttons that change it.
+//  What `notchling-hooks` has wired for each agent, and the buttons that change it.
 //
 //  The script is the authority, not this file. Whether the hooks are ours, and what holds the single
 //  status line slot, are questions with fiddly answers — a bare name resolved from `PATH` is as
@@ -13,7 +13,7 @@
 
 import Foundation
 
-struct ClaudeWiring: Equatable, Sendable, Decodable {
+struct AgentWiring: Equatable, Sendable, Decodable {
     /// Where the hook entries come from, if anywhere.
     enum Hooks: String, Codable, Sendable {
         case none
@@ -44,9 +44,33 @@ struct ClaudeWiring: Equatable, Sendable, Decodable {
     var wrapped: String = ""
     /// Empty where no status line script could be found, which is a build nothing can offer it from.
     var statusLineResolved: String = ""
+
+    /// Codex, whose only surface is its hooks: no registry to discover sessions from, and no status
+    /// line slot to put anything in.
+    ///
+    /// Optional because absent is a real answer rather than a gap to fill in — a script that does not
+    /// report it is one that does not know about Codex, and the window has to show the rest anyway.
+    var codex: CodexWiring?
 }
 
-enum ClaudeSetup {
+struct CodexWiring: Equatable, Sendable, Decodable {
+    /// Whether this machine looks like it has Codex — the binary on `PATH`, or its home directory.
+    /// Neither is proof, and it is only ever used to decide whether asking is worth it.
+    var available: Bool = false
+    /// The hooks file, wherever `CODEX_HOME` puts it.
+    var home: String = ""
+    var hooks: AgentWiring.Hooks = .none
+    var hookCommand: String = ""
+    /// Always `unknown`, and a field rather than an omission so the limitation is visible.
+    ///
+    /// Codex will not run a hook whose definition has not been reviewed, and records that decision as
+    /// a hash keyed by the hook's position in its file. A hash at a position is not proof it matches
+    /// what is there now, and writing one would forge an answer meant for the person — so this asks
+    /// them to settle it instead of claiming to know.
+    var trust: String = "unknown"
+}
+
+enum AgentSetup {
     enum Failure: Error, Equatable {
         /// No `install-hooks.sh` beside this binary — a `swift run` build rather than a bundle.
         case unavailable
@@ -75,10 +99,10 @@ enum ClaudeSetup {
 
     // MARK: - Reading
 
-    nonisolated static func read() throws -> ClaudeWiring {
+    nonisolated static func read() throws -> AgentWiring {
         let output = try run(["status", "--json"])
         guard let data = output.data(using: .utf8),
-              let wiring = try? JSONDecoder().decode(ClaudeWiring.self, from: data)
+              let wiring = try? JSONDecoder().decode(AgentWiring.self, from: data)
         else {
             throw Failure.failed("could not read what is wired")
         }
@@ -87,26 +111,64 @@ enum ClaudeSetup {
 
     // MARK: - Changing
 
-    nonisolated static func wireHooks() throws { _ = try run(["install"]) }
-    /// `at` names the copy to remove, for the case where it is not the one that would be resolved
-    /// now: a stale install, or a settings.json entry sitting alongside the plugin's own hooks.
-    nonisolated static func unwireHooks(at command: String? = nil) throws {
-        _ = try run(command.map { ["uninstall", $0] } ?? ["uninstall"])
+    nonisolated static func wireHooks(provider: Provider = .claude) throws {
+        _ = try run(["install"] + Self.flag(provider))
+    }
+    /// `at` names the copy to remove. Passed wherever it is known — a stale install, a settings.json
+    /// entry sitting alongside the plugin's own hooks, or simply the command the status report just
+    /// read — because without it the script has to resolve a hook binary of its own, and it dies when
+    /// there is none to find. A wired entry naming a binary that has since gone is exactly that case.
+    nonisolated static func unwireHooks(at command: String? = nil, provider: Provider = .claude) throws {
+        // The installer appends the agent's own argument, so it is handed the binary rather than the
+        // command that was found in the file.
+        let binary = command.map { Self.binary(of: $0, provider: provider) }
+        _ = try run((binary.map { ["uninstall", $0] } ?? ["uninstall"]) + Self.flag(provider))
     }
     nonisolated static func removeStatusLine() throws { _ = try run(["no-statusline"]) }
 
     /// Two steps, because `install` appends. Wiring the new copy without removing the old one leaves
     /// both registered and every event reported twice — and `uninstall` on its own resolves the copy
     /// found *now*, which is not the stale one to be removed, so the path has to be handed to it.
-    /// Two steps, because `install` appends. Wiring the new copy without removing the old one leaves
-    /// both registered and every event reported twice — and `uninstall` on its own resolves the copy
-    /// found *now*, which is not the stale one to be removed, so the path has to be handed to it.
     ///
     /// In this order, deliberately. The other way round, an `install` that cannot resolve a hook
     /// binary dies *after* the old entries are gone, and the machine is left wired to nothing at all.
-    nonisolated static func repointHooks(from stale: String) throws {
-        _ = try run(["install"])
-        _ = try run(["uninstall", stale])
+    ///
+    /// One step where there is nothing left to remove. `resolved` is the binary `install` writes down,
+    /// and where the stale entry names that same binary — differing from ours only by the agent
+    /// argument — `install` has upgraded that very entry rather than appending beside it. Removing it
+    /// then would unwire the agent completely, while the window reported success.
+    nonisolated static func repointHooks(
+        from stale: String,
+        resolved: String,
+        provider: Provider = .claude
+    ) throws {
+        _ = try run(["install"] + Self.flag(provider))
+        guard Self.repointRemovesStaleEntry(from: stale, resolved: resolved, provider: provider) else {
+            return
+        }
+        try unwireHooks(at: stale, provider: provider)
+    }
+
+    /// Whether re-pointing has anything left to remove once `install` has run. False where the stale
+    /// entry names the binary just wired: `install` upgraded that entry where it sat, so an
+    /// `uninstall` naming the same binary would remove the wiring rather than a leftover.
+    nonisolated static func repointRemovesStaleEntry(
+        from stale: String,
+        resolved: String,
+        provider: Provider
+    ) -> Bool {
+        binary(of: stale, provider: provider) != resolved
+    }
+
+    /// A wired command with the agent argument the installer appends taken back off.
+    private nonisolated static func binary(of command: String, provider: Provider) -> String {
+        command.replacingOccurrences(of: " --provider \(provider.rawValue)", with: "")
+    }
+
+    /// Claude is the default in the script too, so its argument is left off rather than spelled out —
+    /// which keeps every command this runs identical to the one it ran before Codex existed.
+    private nonisolated static func flag(_ provider: Provider) -> [String] {
+        provider == .claude ? [] : ["--provider", provider.rawValue]
     }
 
     /// `occupied` is consulted only when something else holds the slot, and the script refuses

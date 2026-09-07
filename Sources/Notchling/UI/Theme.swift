@@ -36,8 +36,6 @@ enum Theme {
 
     // MARK: - Derived
 
-    /// The ring a dot draws around itself when its state wants attention.
-    static let attentionRingOpacity: Double = 0.4
     /// Applied to a whole row's worth of text when the numbers behind it have gone stale.
     static let staleOpacity: Double = 0.55
 

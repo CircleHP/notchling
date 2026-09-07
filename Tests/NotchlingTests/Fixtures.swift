@@ -21,6 +21,25 @@ func hookEvent(
     return try! JSONDecoder().decode(HookEvent.self, from: data)
 }
 
+/// The same, for a spool event that names its agent — what `notchling-hook --provider codex` writes.
+func codexEvent(
+    _ event: String,
+    session: String = "cx1",
+    at date: Date = Date(timeIntervalSince1970: 1_000_000),
+    _ extras: [String: Any] = [:]
+) -> HookEvent {
+    var payload: [String: Any] = [
+        "v": 2,
+        "provider": "codex",
+        "ts": date.timeIntervalSince1970,
+        "event": event,
+        "sessionId": session,
+    ]
+    payload.merge(extras) { _, new in new }
+    let data = try! JSONSerialization.data(withJSONObject: payload)
+    return try! JSONDecoder().decode(HookEvent.self, from: data)
+}
+
 /// Same idea for registry entries, which are decoded from `~/.claude/sessions/<pid>.json`.
 func registryEntry(
     session: String = "s1",

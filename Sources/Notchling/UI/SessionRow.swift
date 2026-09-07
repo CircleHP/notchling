@@ -15,7 +15,7 @@ struct SessionRow: View {
     var body: some View {
         Button { onFocus(session) } label: {
             HStack(alignment: .top, spacing: metrics.size(8)) {
-                StateDot(state: session.state)
+                SessionMark(provider: session.provider, state: session.state)
                     .padding(.top, metrics.size(3))
 
                 VStack(alignment: .leading, spacing: metrics.size(1)) {
@@ -90,7 +90,19 @@ struct SessionRow: View {
                 .foregroundStyle(session.isStalled ? Theme.amber : Theme.color(for: session.state))
 
             // Re-renders once a second while a turn is in flight, and not at all otherwise.
-            if session.state == .working, let start = session.turnStartedAt {
+            //
+            // `needsYou` counts from when the prompt appeared, not from the turn: no agent reports that
+            // a person answered — Codex emits nothing at all, and the row only learns when the approved
+            // tool finishes, which for a long command is a minute later. A bare label cannot be told
+            // from a fresh one; a label with a clock on it can.
+            if session.state == .needsYou, let start = session.attentionSince {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(context.date.timeIntervalSince(start).elapsedLabel)
+                        .font(metrics.font(9.5, design: .rounded))
+                        .foregroundStyle(Theme.color(for: .needsYou).opacity(0.8))
+                        .monospacedDigit()
+                }
+            } else if session.state == .working, let start = session.turnStartedAt {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Text(context.date.timeIntervalSince(start).elapsedLabel)
                         .font(metrics.font(9.5, design: .rounded))
@@ -142,6 +154,7 @@ struct SessionRow: View {
                 parts.append("+\(added) −\(removed) lines this session")
             }
         }
+        parts.append("\(session.provider.displayName) session")
         if TerminalFocus.canFocusPrecisely(session) {
             parts.append("Click to focus its tab")
         } else {
@@ -182,27 +195,28 @@ private struct MetricsLine: View {
     }
 }
 
-private struct StateDot: View {
+/// The mark at the head of a row: its shape says which agent the session belongs to, its fill says what
+/// the session is doing. See `ProviderArt` for the shapes and why they are drawn rather than borrowed.
+///
+/// Two facts in the space of one. The state was already said twice — this fill and the label on the
+/// right — so the shape was going spare; and it is shape rather than a second colour because both
+/// colour meanings on a row are already taken, by this fill and by the `/color` gutter beside it. A
+/// third would read as a third state, the state palette having claimed red, amber and green already.
+private struct SessionMark: View {
+    let provider: Provider
     let state: SessionState
 
     @Environment(\.widgetMetrics) private var metrics
 
     var body: some View {
-        Circle()
-            .fill(Theme.color(for: state))
-            .frame(width: metrics.size(6), height: metrics.size(6))
-            .overlay {
-                // A ring on the states that want attention, so they stay distinguishable without
-                // relying on colour alone.
-                if state == .needsYou || state == .error {
-                    Circle()
-                        .stroke(
-                            Theme.color(for: state).opacity(Theme.attentionRingOpacity),
-                            lineWidth: metrics.size(3)
-                        )
-                        .frame(width: metrics.size(11), height: metrics.size(11))
-                }
-            }
+        // No halo on the states that want attention, and nothing else drawn around the mark. A row
+        // that wants something says `needs you` or `failed` in words on its right, with a clock
+        // beside that while it waits — and a ring around a shape whose whole job is not being a
+        // circle takes the shape back.
+        PixelBitmapView(bitmap: ProviderArt.mark(for: provider), color: Theme.color(for: state))
+            // Twelve rather than nine: the marks are fourteen pixels across, and at nine a cell lands
+            // on barely more than one device pixel — enough to blur a single-cell spoke away.
+            .frame(width: metrics.size(12), height: metrics.size(12))
     }
 }
 

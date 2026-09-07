@@ -62,7 +62,7 @@ struct ExpandedView: View {
             }
 
             if layout.rows.isEmpty {
-                Text("No Claude sessions running")
+                Text("No sessions running")
                     .font(metrics.font(12))
                     .foregroundStyle(Theme.dim)
                     .padding(.vertical, metrics.size(6))
@@ -82,12 +82,13 @@ struct ExpandedView: View {
                 }
             }
 
-            if let usage = store.usage {
+            // Every line says whose plan it describes, so none of them can appear to speak for both.
+            if !store.usage.isEmpty {
                 Divider()
                     .overlay(Theme.hairline)
                     .padding(.vertical, metrics.size(1))
                     .padding(.horizontal, metrics.size(Self.contentInset))
-                UsageBarSection(usage: usage)
+                UsageLines(usage: store.usage)
                     .padding(.horizontal, metrics.size(Self.contentInset))
             }
         }
@@ -135,14 +136,14 @@ struct ExpandedView: View {
     private func view(for row: PanelRow, at index: Int) -> some View {
         switch row {
         case let .session(captured):
-            SessionRow(session: store.session(id: captured.sessionID) ?? captured, onFocus: actions.focus)
+            SessionRow(session: store.session(key: captured.key) ?? captured, onFocus: actions.focus)
 
-        case let .agent(sessionID, captured):
+        case let .agent(sessionKey, captured):
             AgentRow(
-                agent: store.session(id: sessionID)?.agents[captured.agentID] ?? captured,
+                agent: store.session(key: sessionKey)?.agents[captured.agentID] ?? captured,
                 isLast: layout.isLastInBlock(index),
                 onFocus: {
-                    guard let session = store.session(id: sessionID) else { return }
+                    guard let session = store.session(key: sessionKey) else { return }
                     actions.focus(session)
                 }
             )

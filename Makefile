@@ -102,8 +102,13 @@ install: bundle stop
 	@echo "hooks point at $(HOOK_PATH)"
 	@echo "restart any running Claude sessions, or start a new one."
 
+# Both agents, where the machine has both. Codex is skipped silently when it is not installed: this
+# is a development convenience, and `notchling-hooks setup` is the route that asks.
 install-hooks:
 	./install-hooks.sh install "$(HOOK_PATH)"
+	@if command -v codex >/dev/null 2>&1 || [ -d "$${CODEX_HOME:-$$HOME/.codex}" ]; then \
+		./install-hooks.sh install "$(HOOK_PATH)" --provider codex; \
+	fi
 
 # Separate from `install` on purpose: registering a status line makes Claude Code drop some of its
 # footer hints, which should be opted into rather than inherited. The script lives inside the bundle,
@@ -116,6 +121,7 @@ no-statusline:
 
 uninstall-hooks:
 	./install-hooks.sh uninstall "$(HOOK_PATH)"
+	-@./install-hooks.sh uninstall "$(HOOK_PATH)" --provider codex 2>/dev/null || true
 
 uninstall: stop uninstall-hooks no-statusline no-autostart
 	rm -rf "$(INSTALLED)"
