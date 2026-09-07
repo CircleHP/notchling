@@ -75,7 +75,7 @@ one step:
 git clone https://github.com/CircleHP/notchling.git
 cd notchling
 make install
-make statusline    # optional: plan-usage bars, see the trade-off below
+make statusline    # optional: Claude Code's plan usage, see the trade-off below
 make autostart     # optional: start at login
 ```
 
@@ -97,7 +97,9 @@ command that asks.
 
 ## Codex
 
-Wired separately, and worth wiring separately: it is the same widget with less to go on.
+Wired separately. A Codex row carries nearly everything a Claude Code row does — the table below is
+the whole of what it cannot, and both entries in it come from the same thing: Codex keeps no registry
+of its live sessions.
 
 ```sh
 notchling-hooks install --provider codex     # or answer yes during `notchling-hooks setup`
@@ -111,9 +113,14 @@ can take that step for you. `notchling-hooks status` reports trust as unknown fo
 the record is a hash keyed by a hook's position, and a hash sitting at a position is no proof it
 matches what is there now.
 
-`CODEX_HOME` is honoured if you have moved Codex's directory.
+`CODEX_HOME` is honoured if you have moved Codex's directory. The widget itself needs no such setting:
+the files it reads are found from the path each hook event reports, which is what keeps it working when
+it starts at login and inherits no terminal's environment.
 
 ### What a Codex row shows, and what it cannot
+
+Nothing here needs configuring beyond the hooks. Every number comes from a file each hook event points
+at, and the derived name from a small index beside it — see [what it touches](#what-it-touches).
 
 | | Claude Code | Codex |
 |---|---|---|
@@ -124,8 +131,10 @@ matches what is there now.
 | Last message when a turn finishes | yes | yes |
 | Interrupted and compacting | — | yes |
 | Failed turn | yes | **no** — Codex has no event for one |
-| Session name | the title the agent derives | the working directory |
-| Context and plan usage | yes, via the status line | **no** — Codex has no status line slot |
+| Session name | the title the agent derives, or one you set | the name Codex derives, or one you set with a rename |
+| Per-session context and model | yes, via the status line | yes, from the session's own record |
+| Plan usage | yes, via the status line | yes, and the two windows are the same 5h and 7d |
+| Effort | yes | yes |
 
 Two consequences of having no registry, both worth knowing before they surprise you. A Codex session
 appears only from its **first trusted hook event**, so one already running when you wired the hooks
@@ -139,9 +148,11 @@ The widget shows a Codex permission request and never answers one. Codex lets a 
 by what it prints; `notchling-hook` prints nothing, ever, which means "no opinion" and leaves the
 question to you in the terminal where you can see what is being asked.
 
-One rough edge to expect: Codex emits nothing when you approve, so the row clears its `needs you` when
-the approved tool *finishes* rather than when you answer. A long command therefore keeps the row asking
-for attention it no longer needs.
+One rough edge to expect, and it cannot be fixed from here: Codex emits nothing when you approve, so
+the row clears its `needs you` when the approved tool *finishes* rather than when you answer. Measured
+across three approvals the gap was 9, 11 and 44 seconds, and the session's own record is silent for the
+same stretch — so nothing on this machine knows you have answered. What the row does instead is say how
+long it has been asking, which is enough to tell a stale prompt from a fresh one.
 
 ### Downgrading
 
@@ -222,7 +233,20 @@ open rather than while you hover — a list reflowing under the pointer is worse
 
 ## Plan usage and per-session context
 
-Both are behind `notchling-hooks statusline` (or `make statusline` from a clone), and here's the
+Each agent reports these somewhere different, so what it costs to see them differs too. There is a
+switch per agent in the settings window, and the numbers are shown as numbers rather than bars — two
+windows for each of two agents is four rows of a panel whose whole point is being glanceable.
+
+### Codex
+
+Nothing to configure. Every Codex hook event names the session's own record, and the context fill, the
+two rate-limit windows and the effort are read out of it — the same 5-hour and 7-day windows Claude
+Code reports, and the same calculation Codex's own `/status` uses, so the two agree rather than nearly
+agree. Turning the switch off stops the file being opened for them at all.
+
+### Claude Code
+
+Behind `notchling-hooks statusline` (or `make statusline` from a clone), and here's the
 honest trade-off: `rate_limits.*` and
 `context_window.*` are handed to Claude Code's **status line** and to nothing else — no hook payload
 carries them and nothing under `~/.claude` caches them. So reading them means registering a status
@@ -263,27 +287,35 @@ as it does now; it just stops feeding the bars.
 **This needs a session restart, and nothing does it for you.** Claude Code reads `statusLine` at
 session start, exactly as it reads hooks, so adding it from inside a live session does nothing for that
 session however long you wait. Restart it; a file appears under `~/.notchling/usage/` the first time a
-restarted session renders its status line, and the bars are drawn in the **expanded panel** rather than
-on the compact strip, so open the notch to see them.
+restarted session renders its status line, and the numbers are drawn in the **expanded panel** rather
+than on the compact strip, so open the notch to see them.
 
 Because a status line only runs while its session is on screen, these numbers go stale when nothing is
 running. The panel dims them and says so rather than presenting old numbers as current.
 
-**All of this is also in the settings window.** The gear in the panel has a **Claude Code** block
-that reports what is wired — hooks, and what holds the status line slot — with one button each:
+**All of this is also in the settings window.** The gear in the panel has a block per agent it finds,
+each reporting what is wired with one button per row and its own **Show plan usage** switch:
 
 ```
-Hooks         Wired                              [Unwire]
-Plan usage    Wired, in front of ccstatusline    [Remove]
+Claude Code
+  Hooks         Wired                              [Unwire]
+  Plan usage    Wired, in front of ccstatusline    [Remove]
+  ☑ Show plan usage
+
+Codex
+  Hooks         Wired                              [Unwire]
+  ☑ Show plan usage
 ```
 
-The buttons run this same script, so they back `settings.json` up the same way and refuse the same
+The buttons run this same script, so they back each agent's file up the same way and refuse the same
 things; where another tool holds the slot, the window asks whether to run in front of it or replace it
 before touching anything. `notchling-hooks status` prints the same answer in a terminal, and
 `--json` is what the window reads — the rules live in the script, so the two cannot disagree.
 
-**Hiding the bars again is a checkbox.** The settings window behind the gear has a **Show plan usage**
-switch. Off, the panel drops that block and the sweep stops reading `~/.notchling/usage/` for it; the
+**Hiding them again is a checkbox, one per agent — they are separate accounts on separate plans.** The
+settings window behind the gear has a **Show plan usage**
+switch. Off, the panel drops that agent's line and stops reading for it; for Claude Code that means
+`~/.notchling/usage/` goes unread, and for Codex the session's own record is not opened for them. The
 three-day cleanup of that directory carries on either way, so nothing accumulates while you are not
 looking. It takes effect within a couple of seconds and needs no restart. The status line keeps running, so per-session
 context is unaffected — removing the status line itself is `notchling-hooks no-statusline`, and that one
@@ -455,7 +487,8 @@ reliably clears it.
 | `~/Library/LaunchAgents/local.notchling.plist` | only with `make autostart`. |
 | `~/.claude/sessions/` | **read only** — Claude Code's own registry. |
 | `~/.claude/projects/` | **read only** — two entries from a session's transcript: the derived title, and a `/color`. |
-| `~/.codex/sessions/` | **never read.** Every Codex event names a rollout file here; the path is not opened. |
+| `~/.codex/sessions/` | **read only** — from the file each Codex event names: the context fill, the two rate-limit windows, and the effort. Nothing else, and never the conversation. |
+| `~/.codex/session_index.jsonl` | **read only** — the name Codex derives for a session, or the one you set with a rename. |
 
 ## Uninstall
 
@@ -531,8 +564,12 @@ format the running app predates. Restarting the widget is the fix; the directory
 says what each entry actually is, including Claude Code's own pooled background processes (which the
 widget hides).
 
-**Usage bars missing** — five checks, in order. Start with the **Show plan usage** switch in the
-settings window: off, there are no bars whatever else is true. Then the status line is opt-in: the settings window's **Plan usage** row says whether it is wired and
+**Codex plan usage missing** — one check. The **Show plan usage** switch under **Codex** in the
+settings window; off, the file is not opened for them. Nothing else is involved: no status line, and
+nothing to wire beyond the hooks.
+
+**Claude Code plan usage missing** — five checks, in order. Start with the **Show plan usage** switch
+under **Claude Code** in the settings window: off, there are no numbers whatever else is true. Then the status line is opt-in: the settings window's **Plan usage** row says whether it is wired and
 wires it, or run `notchling-hooks statusline` — and if another tool already holds that slot, both offer
 to run in front of it rather than refusing. Then **restart your sessions**: `statusLine` is read at session
 start, and a session that was already running will never pick it up however long you wait. Confirm it

@@ -1531,8 +1531,13 @@ struct ConcurrentCallTests {
         #expect(session(store)?.currentToolSummary == "Session.swift")
         #expect(session(store)?.state == .working)
 
+        // Not blanked once nothing is running: completions arrive within a second of the call, and
+        // then the model thinks for half a minute. A row cleared here names a tool for one second in
+        // thirty and reads as a session doing nothing, which is what an agent reporting no completions
+        // at all correctly avoids by never clearing it.
         store.apply(codexEvent("PostToolUse", at: t + 3, ["toolName": "Read", "toolUseId": b]))
-        #expect(session(store)?.currentTool == nil, "and now nothing is running")
+        #expect(session(store)?.currentTool == "Read", "the last thing it did, until it does another")
+        #expect(session(store)?.currentToolSummary == "Session.swift")
     }
 
     /// The quiet failure: with the next start taken as the last call's end, a tool's history filled up
@@ -1605,7 +1610,9 @@ struct ConcurrentCallTests {
         store.apply(codexEvent("PostToolUse", at: t + 4, ["agentId": "ag1", "toolName": "Grep", "toolUseId": b]))
 
         #expect(session(store)?.currentTool == "Bash", "the parent's own call is untouched")
-        #expect(session(store)?.agents["ag1"]?.currentTool == nil, "and the child's is closed")
+        #expect(session(store)?.agents["ag1"]?.currentTool == "Grep",
+                "the child keeps naming what it last did, as its parent does")
+        #expect(session(store)?.agents["ag1"]?.activeCalls.isEmpty == true, "but nothing is in flight")
         #expect(session(store)?.toolDurations.longestSeen(for: "Grep") == nil,
                 "a child's timing is never the session's")
     }
@@ -1858,5 +1865,206 @@ struct SessionNameSourceTests {
 
         append(#"{"type":"agent-color","agentColor":"pink","sessionId":"s1"}"#, to: path)
         #expect(await settle(store, registry: entry) { store.sessions.first?.colorName == "pink" })
+    }
+}
+
+/// No agent reports that a person answered a permission prompt. Codex emits nothing at all — measured
+/// across three approvals, the next event is the approved tool *finishing*, 9, 11 and 44 seconds later —
+/// so a bare `needs you` cannot be told from a fresh one. The row carries a clock instead.
+@Suite("SessionStore — how long attention has been wanted")
+@MainActor
+struct AttentionClockTests {
+    private let t = Date(timeIntervalSince1970: 1_000_000)
+    private let key = SessionKey(provider: .codex, id: "cx1")
+
+    @Test("the clock starts when the prompt appeared, not when the event was drained")
+    func clockStartsAtTheEvidence() {
+        let clock = TestClock()
+        let store = SessionStore(now: clock.now)
+        store.apply(codexEvent("UserPromptSubmit", at: t))
+        // Drained a minute after the fact, which must not shorten how long the prompt has been up.
+        clock.advance(60)
+        store.apply(codexEvent("Notification", at: t + 1, ["notificationType": "permission_prompt"]))
+
+        #expect(store.session(key: key)?.attentionSince == t + 1)
+    }
+
+    @Test("it stops the moment the row stops asking")
+    func clockClearsOnRelease() {
+        let store = SessionStore()
+        store.apply(codexEvent("UserPromptSubmit", at: t))
+        store.apply(codexEvent("PreToolUse", at: t + 1, ["toolName": "Bash", "toolUseId": "e1"]))
+        store.apply(codexEvent("Notification", at: t + 2, ["notificationType": "permission_prompt"]))
+        #expect(store.session(key: key)?.attentionSince == t + 2)
+
+        store.apply(codexEvent("PostToolUse", at: t + 46, ["toolName": "Bash", "toolUseId": "e1"]))
+        #expect(store.session(key: key)?.attentionSince == nil)
+    }
+
+    /// Esc is the other way out, and it must clear the clock too or an interrupted turn keeps a stale
+    /// one for as long as the row lives.
+    @Test("an interrupt stops it as well")
+    func interruptClearsTheClock() {
+        let store = SessionStore()
+        store.apply(codexEvent("UserPromptSubmit", at: t))
+        store.apply(codexEvent("Notification", at: t + 1, ["notificationType": "permission_prompt"]))
+        store.apply(codexEvent("Interrupt", at: t + 2))
+
+        #expect(store.session(key: key)?.attentionSince == nil)
+        #expect(store.session(key: key)?.state == .idle)
+    }
+
+    @Test("a session that has never been asked has no clock")
+    func noClockWhenNotAsked() {
+        let store = SessionStore()
+        store.apply(codexEvent("UserPromptSubmit", at: t))
+        #expect(store.session(key: key)?.attentionSince == nil)
+    }
+}
+
+/// End to end over a real rollout, because the defect this guards is not in one function: the reader
+/// finds the numbers, the hook supplies the model, and `tick()` must not wipe either with the absence
+/// of a status line that was never going to be there.
+@Suite("SessionStore — a Codex session's numbers")
+@MainActor
+struct CodexMetricsTests {
+    private let key = SessionKey(provider: .codex, id: "cx1")
+
+    private static let tokenCount = """
+    {"timestamp":"2026-09-07T13:38:32.093Z","type":"event_msg","payload":{"type":"token_count",\
+    "info":{"last_token_usage":{"total_tokens":16902},"model_context_window":258400},\
+    "rate_limits":{"primary":{"used_percent":77.0,"window_minutes":300,"resets_at":4102444800},\
+    "secondary":{"used_percent":24.0,"window_minutes":10080,"resets_at":4102444800}}}}
+    """
+
+    private func rollout() -> String {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchling-store-rollout-\(UUID().uuidString).jsonl")
+        try! Self.tokenCount.appending("\n").write(to: url, atomically: true, encoding: .utf8)
+        return url.path
+    }
+
+    @Test("the context percentage and the plan limits come from the rollout, the model from the hook")
+    func rolloutFillsTheRow() async throws {
+        let path = rollout()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let store = SessionStore()
+        let event = { store.apply(codexEvent("UserPromptSubmit", ["transcriptPath": path, "model": "gpt-5.6-sol"])) }
+        event()
+
+        let arrived = await settle(store, poke: event) {
+            store.session(key: self.key)?.metrics?.contextUsedPercent != nil
+        }
+        #expect(arrived)
+
+        let metrics = try #require(store.session(key: key)?.metrics)
+        #expect(metrics.contextUsedPercent == 2)
+        #expect(metrics.contextWindowSize == 258_400)
+        #expect(metrics.model == "gpt-5.6-sol", "which no rollout was asked for")
+        #expect(store.usage[.codex]?.fiveHour?.usedPercentage == 77)
+        #expect(store.usage[.claude] == nil, "one agent reporting says nothing about the other")
+    }
+
+    /// The regression this exists for: Claude's status-line sweep runs every two seconds and finds
+    /// nothing for a Codex session id. Applied, that emptied the row on the next tick.
+    @Test("a sweep for the status line does not wipe what the rollout found")
+    func tickKeepsRolloutMetrics() async throws {
+        let path = rollout()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let store = SessionStore(metrics: { [:] })
+        let event = { store.apply(codexEvent("UserPromptSubmit", ["transcriptPath": path, "model": "gpt-5.6-sol"])) }
+        event()
+        _ = await settle(store, poke: event) {
+            store.session(key: self.key)?.metrics?.contextUsedPercent != nil
+        }
+
+        store.tick()
+        store.tick()
+
+        #expect(store.session(key: key)?.metrics?.contextUsedPercent == 2)
+        #expect(store.session(key: key)?.metrics?.model == "gpt-5.6-sol")
+    }
+
+    /// A Claude session must not be pointed at the reader, whatever path its events name.
+    @Test("a Claude session's transcript is never read as a rollout")
+    func claudeIsNotRead() async {
+        let path = rollout()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let store = SessionStore(metrics: { [:] })
+        let event = { store.apply(hookEvent("UserPromptSubmit", ["transcriptPath": path])) }
+        event()
+        // Long enough for a read to have landed if one had been scheduled.
+        _ = await settle(store, poke: event, timeout: 0.5) { false }
+
+        #expect(store.session(key: SessionKey(provider: .claude, id: "s1"))?.metrics == nil)
+        #expect(store.usage[.claude] == nil)
+    }
+}
+
+/// A row named after its working directory names the project, not the work. Claude Code's derived title
+/// comes out of the session's transcript; Codex publishes one to a shared index, and both land in the
+/// same field so `displayName` orders them the same way against a name a person chose.
+@Suite("SessionStore — a Codex session's name")
+@MainActor
+struct CodexNameSourceTests {
+    private let key = SessionKey(provider: .codex, id: "01a07c1f")
+
+    /// A real rollout path, because the index's location is derived from it.
+    private func scratch() -> (rollout: String, home: URL) {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notchling-codexhome-\(UUID().uuidString)")
+        let day = home.appendingPathComponent("sessions/2026/09/07")
+        try! FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+
+        let rollout = day.appendingPathComponent("rollout-2026-09-07T15-12-44-01a07c1f.jsonl")
+        try! "\n".write(to: rollout, atomically: true, encoding: .utf8)
+        try! #"{"id":"01a07c1f","thread_name":"Check Krakow weather","updated_at":"2026-09-07T13:47:12Z"}"#
+            .appending("\n")
+            .write(to: home.appendingPathComponent("session_index.jsonl"), atomically: true, encoding: .utf8)
+
+        return (rollout.path, home)
+    }
+
+    @Test("the derived name replaces the directory on the row")
+    func nameReachesTheRow() async throws {
+        let (rollout, home) = scratch()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let store = SessionStore(metrics: { [:] })
+        let event = {
+            store.apply(codexEvent("UserPromptSubmit", session: "01a07c1f", [
+                "transcriptPath": rollout, "cwd": "/Users/someone/Desktop/notchling",
+            ]))
+        }
+        event()
+        #expect(store.session(key: key)?.displayName == "notchling", "the fallback, until it is named")
+
+        let named = await settle(store, poke: event) { store.session(key: self.key)?.aiTitle != nil }
+        #expect(named)
+        #expect(store.session(key: key)?.displayName == "Check Krakow weather")
+    }
+
+    /// Claude Code's own titles come from its transcripts. Pointing it at another agent's index would
+    /// name a Claude row from a file that has nothing to do with it.
+    @Test("a Claude session is never named from it")
+    func claudeIsNotNamedFromTheIndex() async {
+        let (rollout, home) = scratch()
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let store = SessionStore(metrics: { [:] })
+        let event = {
+            store.apply(hookEvent("UserPromptSubmit", session: "01a07c1f", [
+                "transcriptPath": rollout, "cwd": "/Users/someone/Desktop/notchling",
+            ]))
+        }
+        event()
+        _ = await settle(store, poke: event, timeout: 0.5) { false }
+
+        let claude = store.session(key: SessionKey(provider: .claude, id: "01a07c1f"))
+        #expect(claude?.aiTitle == nil)
+        #expect(claude?.displayName == "notchling")
     }
 }

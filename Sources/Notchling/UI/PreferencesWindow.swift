@@ -132,7 +132,8 @@ struct PreferencesView: View {
     let checkNow: () async -> String
 
     @State private var collection: Collection = .idle
-    @State private var showsPlanUsage = PanelPreference.showsPlanUsage
+    @State private var showsClaudeUsage = PanelPreference.showsPlanUsage(for: .claude)
+    @State private var showsCodexUsage = PanelPreference.showsPlanUsage(for: .codex)
     @State private var wiring: AgentWiring?
     @State private var wiringError: String?
     @State private var isWiring = false
@@ -158,9 +159,12 @@ struct PreferencesView: View {
                     Divider()
                     codex
                 }
+            } else {
+                // No installer beside this build — a `swift run` rather than a bundle — so there are no
+                // agent blocks for these to sit under, and they would otherwise be unreachable.
+                Divider()
+                panel
             }
-            Divider()
-            panel
             if updatesSupported {
                 Divider()
                 updateChecks
@@ -215,6 +219,8 @@ struct PreferencesView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                planUsageToggle(for: .claude, isOn: $showsClaudeUsage)
             } else if wiringError == nil {
                 ProgressView().controlSize(.small)
             }
@@ -270,6 +276,8 @@ struct PreferencesView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                planUsageToggle(for: .codex, isOn: $showsCodexUsage)
             }
         }
     }
@@ -418,17 +426,44 @@ struct PreferencesView: View {
         }
     }
 
+    /// The plan-usage switches live with the agent whose plan they describe, one each, because they are
+    /// separate accounts: someone paying for one and not the other has no reason to give up a line of
+    /// the panel to the one they do not. Independent, so either or both can be on.
+    ///
     /// Written straight to the preference, like the hour picker below and unlike the update switch:
     /// nothing has to react to this. The panel reads the flag on its next sweep, two seconds away.
+    @ViewBuilder
+    private func planUsageToggle(for provider: Provider, isOn: Binding<Bool>) -> some View {
+        Toggle("Show plan usage", isOn: isOn)
+            .onChange(of: isOn.wrappedValue) { _, shown in
+                PanelPreference.setShowsPlanUsage(shown, for: provider)
+            }
+
+        Text(planUsageFootnote(for: provider))
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Only where the agent blocks are not drawn. See the body.
     private var panel: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Toggle("Show plan usage", isOn: $showsPlanUsage)
-                .onChange(of: showsPlanUsage) { _, shown in PanelPreference.showsPlanUsage = shown }
-
-            Text("The 5-hour and 7-day bars along the bottom of the panel. Off, they are neither drawn nor read. Per-session context stays.")
-                .font(.system(size: 11))
+            Text("Panel")
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            planUsageToggle(for: .claude, isOn: $showsClaudeUsage)
+            planUsageToggle(for: .codex, isOn: $showsCodexUsage)
+        }
+    }
+
+    private func planUsageFootnote(for provider: Provider) -> String {
+        switch provider {
+        case .claude:
+            "The 5-hour and 7-day numbers along the bottom of the panel. Off, they are neither drawn nor "
+                + "read. Per-session context stays."
+        case .codex:
+            "The 5-hour and 7-day numbers along the bottom of the panel, read out of the session's own "
+                + "record. Off, that record is not opened for them at all. Per-session context stays."
         }
     }
 

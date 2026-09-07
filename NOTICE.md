@@ -12,10 +12,17 @@ It sends no telemetry, ever, and reports nothing about you anywhere. It reads tw
 Code session's own transcript — the title Claude derives, and a colour set with `/color` — because they
 are recorded nowhere else; that is a local file read and nothing leaves the machine.
 
-It reads no Codex conversation at all. Every Codex hook event names that session's rollout file, and
-that path is deliberately never opened: the two entries above exist only in Claude Code's format, so
-reading a rollout would mean scanning somebody's conversation to find records that cannot be in it.
-Codex rows are built from hook events alone, which is why they show less.
+For Codex it reads two local files, and a named few things out of them. Every Codex hook event points
+at that session's own record of itself, and three of the numbers a row shows exist nowhere else: how
+full the context is, and where the account's two rate-limit windows stand. It reads those, the effort
+setting, and nothing else — and it reads the name Codex derives for a session from the small shared
+index beside them, which is the same kind of thing as the title above.
+
+That record also contains the conversation, which is not read. What keeps that from being a promise you
+have to take on faith is the order the file is examined in: a line longer than eight kilobytes is
+discarded before anything looks at it, and the records being sought run to under four, while the ones
+carrying what anybody said run to hundreds. Only a line naming one of those two records is given to a
+JSON parser at all. Nothing is sent anywhere, from either file.
 
 Everything it writes lives under `~/.notchling/`, apart from two files it is told to edit:
 `~/.claude/settings.json` — the hook entries and the optional status line — and `~/.codex/hooks.json`,

@@ -25,12 +25,16 @@ enum Provider: String, Codable, Sendable {
         case .claude: Capabilities(
                 hasTranscriptMarks: true,
                 hasStatusLineMetrics: true,
-                hasToolCompletionEvents: false
+                hasToolCompletionEvents: false,
+                hasRollout: false,
+                hasNameIndex: false
             )
         case .codex: Capabilities(
                 hasTranscriptMarks: false,
                 hasStatusLineMetrics: false,
-                hasToolCompletionEvents: true
+                hasToolCompletionEvents: true,
+                hasRollout: true,
+                hasNameIndex: true
             )
         }
     }
@@ -58,6 +62,16 @@ struct Capabilities: Equatable, Sendable {
     /// needed and would be wrong, because the agent runs tools concurrently — two calls open at once
     /// makes "the next start ends the last call" attribute one tool's time to another.
     var hasToolCompletionEvents: Bool
+
+    /// A per-session record on disk carrying how full the context is and where the account's rate
+    /// limits stand — the numbers Claude Code reports through its status line instead. See
+    /// `CodexRolloutReader` for what is read out of it, and the three rules that keep the rest of it
+    /// from being read.
+    var hasRollout: Bool
+
+    /// A shared index of the names the agent derives for its sessions. Claude Code writes its derived
+    /// title into each session's own transcript instead, which `hasTranscriptMarks` covers.
+    var hasNameIndex: Bool
 }
 
 /// How a session is identified everywhere it is used as a key.

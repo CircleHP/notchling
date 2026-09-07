@@ -33,6 +33,9 @@ struct HookEvent: Decodable {
     /// The agent's own id for one tool call, where it gives them ids. What tells two concurrent calls
     /// apart, and what a completion event names.
     var toolUseId: String?
+    /// Which model the session is running, where the agent reports it on every event. Claude Code's
+    /// arrives through the status line instead.
+    var model: String?
     var toolSummary: String?
     var lastMessage: String?
     var userInput: String?

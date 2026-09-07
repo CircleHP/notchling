@@ -81,11 +81,24 @@ title Claude derives, and a colour set with `/color`. Nothing else is taken from
 leaves the machine. A path that makes it read a file outside that directory, or forward any of it
 anywhere, is a finding.
 
-**A Codex rollout is not read, and that is enforced rather than incidental.** Every Codex hook event
-names the session's rollout file under `~/.codex/sessions/`, and the reader above is gated so that path
-is never opened — the two entries it looks for exist only in Claude Code's format, so opening a rollout
-would mean scanning a conversation for records that cannot be in it. Anything that lets a Codex session
-reach a reader scoped to Claude Code is a finding, whether or not it finds anything.
+**A Codex rollout is read, narrowly, and the narrowness is enforced by construction.** Every Codex
+hook event names the session's own record under `~/.codex/sessions/`, and three numbers a row shows
+exist nowhere else: the context fill and the two rate-limit windows. That file also contains the
+conversation, so `CodexRolloutReader` applies three filters in an order that matters. A line longer than
+`maxLineLength` is discarded before anything examines it — the records sought run to 3.7KB and the ones
+carrying content run to 230KB, so conversation lines are refused on their size alone. Only a line
+naming one of the two records is then handed to a JSON parser. Only five fields are taken out of them.
+
+Anything that weakens that order is a finding: raising the cap so a content record can pass it, parsing
+before the name test, or forwarding a field that is not on the list. So is anything that points the
+reader at a file other than the one the hook named, or points a Claude session at it.
+
+**A Codex session's derived name is read from a shared index.** `~/.codex/session_index.jsonl` carries
+one line per naming — the name Codex derives, and any rename after it — and one field is taken from the
+last entry for a session. The file's location is derived from the rollout path the hook reported rather
+than from `CODEX_HOME`, so a widget launched at login does not depend on a terminal's environment. The
+local database that holds the same name is deliberately not opened. A path that makes this read
+somewhere else, or take anything but the name, is a finding.
 
 **What is out of scope:** the widget displaying content from a session you are already running —
 prompts, titles, tool names and error text are the user's own data, shown on the user's own screen.

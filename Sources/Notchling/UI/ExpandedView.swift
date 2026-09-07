@@ -82,18 +82,13 @@ struct ExpandedView: View {
                 }
             }
 
-            if let usage = store.usage {
+            // Every line says whose plan it describes, so none of them can appear to speak for both.
+            if !store.usage.isEmpty {
                 Divider()
                     .overlay(Theme.hairline)
                     .padding(.vertical, metrics.size(1))
                     .padding(.horizontal, metrics.size(Self.contentInset))
-                // Attributed only when a row on screen belongs to something else. These are one
-                // account's plan on one agent: two plans measured in different units do not add up to
-                // one bar, so the bars stay Claude's and say so rather than appearing to cover both.
-                UsageBarSection(
-                    usage: usage,
-                    attribution: layout.hasMultipleProviders ? Provider.claude.displayName : nil
-                )
+                UsageLines(usage: store.usage)
                     .padding(.horizontal, metrics.size(Self.contentInset))
             }
         }

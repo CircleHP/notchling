@@ -51,7 +51,9 @@ final class SessionStore {
     /// Display-ordered: attention-wanting first, then most recently active.
     private(set) var sessions: [Session] = []
 
-    var usage: UsageSnapshot?
+    /// Plan limits per agent, because they are separate accounts on separate plans measured against
+    /// separate windows. Never summed: two plans do not add up to one number.
+    var usage: [Provider: UsageSnapshot] = [:]
 
     /// A build sitting on disk that this process is not the one running. See `InstalledBuild`.
     var pendingVersion: String?
@@ -79,6 +81,19 @@ final class SessionStore {
     private let processEnvironment = ProcessEnvironmentReader()
 
     private let transcripts = TranscriptReader()
+
+    private let rollouts = CodexRolloutReader()
+
+    private let names = CodexNameReader()
+
+    /// The names an agent has derived for its sessions, by session id. One shared index answers for
+    /// every session at once, so it is held here rather than looked up per row.
+    private var derivedNames: [String: String] = [:]
+
+    /// The newest rate-limit reading each rollout has offered, arbitrated into one answer per agent the
+    /// same way Claude's status-line files are — the readings describe one account from several moments,
+    /// and the highest inside a window is the latest.
+    private var rolloutUsage: [SessionKey: UsageReading] = [:]
 
     /// pids already looked up, so a session with genuinely no terminal identity is not re-probed on
     /// every sweep. Purged by `remove(key:)`: a pid that outlives its session blocks identity
@@ -114,6 +129,8 @@ final class SessionStore {
         guard let session = index.removeValue(forKey: key) else { return nil }
         if let pid = session.pid { release(pid: pid) }
         transcripts.forget(key: key)
+        rollouts.forget(key: key)
+        if rolloutUsage.removeValue(forKey: key) != nil { rebuildUsage(for: key.provider) }
         onRemoved?(session)
         return session
     }
@@ -196,6 +213,15 @@ final class SessionStore {
         if let warp = event.warpSessionId { session.warpSessionID = warp }
         if let term = event.termProgram { session.termProgram = term }
         if let host = event.hostBundleId { session.hostBundleID = host }
+        // Where an agent reports the model on every event, that is the freshest source there is — and
+        // for one with no status line it is the only one. Merged rather than assigned: the rest of the
+        // reading comes from elsewhere and must not be dropped on every event.
+        if let model = event.model, key.provider.capabilities.hasRollout {
+            var metrics = session.metrics ?? SessionMetrics(updatedAt: event.date)
+            metrics.model = model
+            metrics.updatedAt = max(metrics.updatedAt, event.date)
+            session.metrics = metrics
+        }
 
         var newState: SessionState?
 
@@ -357,6 +383,8 @@ final class SessionStore {
         notifyTransition(from: previous, session: session)
         probeTerminalIdentity(for: key)
         readTranscriptMarks(for: key)
+        readRollout(for: key)
+        readDerivedNames()
     }
 
     /// Apply an event that came from inside a subagent, and report whether it was one of those at all.
@@ -686,6 +714,82 @@ final class SessionStore {
         resolveTerminalIdentity(for: key, pid: pid)
     }
 
+    /// The context percentage and the account's rate limits, for an agent that reports neither.
+    ///
+    /// Gated so the reader is never pointed at a file it was not written for, and skipped entirely when
+    /// the person has turned the plan lines off — nobody is reading the answer, and there is no reason
+    /// to open somebody's session record to compute one. The context percentage is not covered by that
+    /// switch: it sits inside a row being read anyway.
+    private func readRollout(for key: SessionKey) {
+        guard key.provider.capabilities.hasRollout,
+              let session = index[key],
+              let path = session.transcriptPath
+        else { return }
+
+        rollouts.read(key: key, path: path) { [weak self] rollout in
+            guard let self, var session = self.index[key] else { return }
+
+            if let reading = rollout.metrics {
+                var metrics = session.metrics ?? reading
+                metrics.contextUsedPercent = reading.contextUsedPercent
+                metrics.contextWindowSize = reading.contextWindowSize
+                if let effort = reading.effort { metrics.effort = effort }
+                metrics.updatedAt = max(metrics.updatedAt, reading.updatedAt)
+                session.metrics = metrics
+                self.index[key] = session
+            }
+
+            if let usage = rollout.usage, PanelPreference.showsPlanUsage(for: key.provider) {
+                self.rolloutUsage[key] = usage
+                self.rebuildUsage(for: key.provider)
+            }
+
+            self.rebuild()
+        }
+    }
+
+    /// The name the agent derives for a session — the same kind of thing as the title Claude Code
+    /// records in a transcript, so it lands in the same field and `Session.displayName` orders it the
+    /// same way against a name a person chose.
+    ///
+    /// What is already known is applied first, because a session that arrived since the last read would
+    /// otherwise wait for the index to change again before being named.
+    private func readDerivedNames() {
+        applyDerivedNames()
+
+        guard let path = index.values
+            .first(where: { $0.provider.capabilities.hasNameIndex && $0.transcriptPath != nil })?
+            .transcriptPath
+            .flatMap(CodexNameReader.indexPath(forRollout:))
+        else { return }
+
+        names.read(path: path) { [weak self] names in
+            guard let self else { return }
+            self.derivedNames = names
+            self.applyDerivedNames()
+        }
+    }
+
+    private func applyDerivedNames() {
+        var changed = false
+        for (key, var session) in index where key.provider.capabilities.hasNameIndex {
+            guard let name = derivedNames[session.sessionID], session.aiTitle != name else { continue }
+            session.aiTitle = name
+            index[key] = session
+            changed = true
+        }
+        if changed { rebuild() }
+    }
+
+    /// One answer per agent out of however many of its sessions are reporting.
+    private func rebuildUsage(for provider: Provider) {
+        let readings = rolloutUsage.filter { $0.key.provider == provider }.map(\.value)
+        let fresh = PanelPreference.showsPlanUsage(for: provider)
+            ? UsageReader.arbitrate(readings)
+            : nil
+        if usage[provider] != fresh { usage[provider] = fresh }
+    }
+
     private func resolveTerminalIdentity(for key: SessionKey, pid: Int32) {
         processEnvironment.read(pid: pid) { [weak self] identity in
             guard let self, var session = self.index[key] else { return }
@@ -714,10 +818,14 @@ final class SessionStore {
         // Turned off means not read at all rather than read and hidden. Nobody is looking at the
         // result, and the scan still reports a usage file it cannot decode — a finding in the log
         // about a part of the widget the person has switched off.
-        let freshUsage = PanelPreference.showsPlanUsage ? UsageReader.read() : nil
-        if freshUsage != usage { usage = freshUsage }
+        let freshUsage = PanelPreference.showsPlanUsage(for: .claude) ? UsageReader.read() : nil
+        if usage[.claude] != freshUsage { usage[.claude] = freshUsage }
+        // Read from what the rollouts already gave rather than opening them again: the switch can be
+        // turned off between sweeps, and the answer has to disappear when it is.
+        rebuildUsage(for: .codex)
 
         refreshPendingVersion()
+        readDerivedNames()
 
         let metrics = readMetrics()
 
@@ -726,14 +834,15 @@ final class SessionStore {
 
         for (key, var session) in index {
             // The status line writes one file per session id and it is Claude Code's, so an agent that
-            // has none must not be handed a reading that merely shares an id with one of its sessions.
-            let reading = session.provider.capabilities.hasStatusLineMetrics
-                ? metrics[session.sessionID]
-                : nil
-            if session.metrics != reading {
-                session.metrics = reading
-                index[key] = session
-                changed = true
+            // has none must not be handed a reading that merely shares an id with one of its sessions —
+            // and must not have its own reading wiped by the absence of one here either.
+            if session.provider.capabilities.hasStatusLineMetrics {
+                let reading = metrics[session.sessionID]
+                if session.metrics != reading {
+                    session.metrics = reading
+                    index[key] = session
+                    changed = true
+                }
             }
 
             let threshold = session.stallThreshold(absolute: Self.stallThreshold)
@@ -794,6 +903,10 @@ final class SessionStore {
         guard session.state != newState else { return }
         session.state = newState
         session.stateChangedAt = now()
+        // Every route out of `needsYou` runs through here, so the clock is started and stopped in one
+        // place rather than in each of them. From the evidence rather than from now: it measures how
+        // long the prompt has been up, which a delayed drain must not shorten.
+        session.attentionSince = newState == .needsYou ? evidenceAt : nil
     }
 
     private func notifyTransition(from previous: SessionState, session: Session) {

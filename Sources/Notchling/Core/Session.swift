@@ -105,6 +105,12 @@ struct Session: Identifiable, Equatable, ToolTracking {
     var currentPromptID: String?
     var isStalled = false
 
+    /// When this session started asking for attention, while it still is.
+    ///
+    /// Its own clock rather than `stateChangedAt`, which a registry scan can move: what a person wants
+    /// to know is how long the prompt has been up, because no agent reports that they answered it.
+    var attentionSince: Date?
+
     /// Set between something in this session saying it is compacting its context and saying it has
     /// finished — the session's own thread or one of its agents.
     ///

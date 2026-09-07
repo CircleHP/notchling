@@ -18,7 +18,8 @@ See what’s working, what’s finished, and what needs you — then click a ses
   Other supported terminals bring the app forward.
 - **Follow parallel work.** See every session in one place whichever CLI it belongs to, most urgent
   first, with subagent progress beneath each one and session names and colours you recognise.
-- **Keep usage in view.** Optional plan-usage and context meters show how much room you have left.
+- **Keep usage in view.** Optional per-agent plan usage and a per-session context meter show how much
+  room you have left, for each CLI separately — two plans do not add up to one number.
 - **Stay focused.** The widget never takes keyboard focus, and works across displays — including
   Macs and monitors without a notch.
 
@@ -45,9 +46,10 @@ See the [setup guide](SETUP.md) for other installation options, configuration, a
 
 ## Your sessions stay on your Mac
 
-Notchling reads session information locally, including session titles and colours. It never reads a
-Codex conversation, even though every Codex event tells it where one is. No telemetry, and no session
-data is sent anywhere. Update checks run only if you enable them or click **Check Now**;
+Notchling reads session information locally, including session titles, colours, context and plan
+limits. It reads a handful of named records and nothing else — a Codex session's own file holds the
+conversation too, and the lines carrying it are discarded on their size before anything parses them. No
+telemetry, and no session data is sent anywhere. Update checks run only if you enable them or click **Check Now**;
 installing an update is a separate choice. [Privacy details](NOTICE.md).
 
 ## Help and more

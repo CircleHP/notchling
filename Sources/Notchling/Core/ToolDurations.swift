@@ -108,7 +108,7 @@ extension ToolTracking {
         if !call.wasBlocked {
             toolDurations.record(date.timeIntervalSince(call.startedAt), for: call.tool)
         }
-        nameRowFromActiveCalls()
+        nameRowFromActiveCalls(fallingBackTo: call)
     }
 
     /// A human is deciding, so every call in flight is now being timed against them rather than
@@ -121,9 +121,16 @@ extension ToolTracking {
         for id in activeCalls.keys { activeCalls[id]?.wasBlocked = true }
     }
 
-    /// Give the row the call that started most recently, or nothing if none is left.
-    mutating func nameRowFromActiveCalls() {
-        let latest = activeCalls.values.max { $0.startedAt < $1.startedAt }
+    /// Give the row the call that started most recently — or, once nothing is running, keep naming the
+    /// one that just finished.
+    ///
+    /// Keeping it is the point. An agent that reports completions reports them within a second of the
+    /// call starting, and then thinks for half a minute before the next one; a row cleared on every
+    /// completion names a tool for one second in thirty and reads as a session doing nothing. The last
+    /// thing it did is the truest thing there is to say until it does something else, which is exactly
+    /// what a row shows for an agent that reports no completions at all.
+    mutating func nameRowFromActiveCalls(fallingBackTo finished: ActiveCall? = nil) {
+        let latest = activeCalls.values.max { $0.startedAt < $1.startedAt } ?? finished
         currentTool = latest?.tool
         currentToolSummary = latest?.summary
     }
