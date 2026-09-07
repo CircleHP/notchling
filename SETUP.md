@@ -12,7 +12,8 @@ something looks wrong. The [README](README.md) covers what the thing is; this is
 | Homebrew | for the install below. Not needed if you build from source |
 | Swift | 6.0 toolchain (Xcode 16+, or its Command Line Tools) — **only** to build from source |
 | `jq` | used by the hook installer and the status line. Homebrew installs it for you |
-| Claude Code | any recent version |
+| Claude Code | any recent version. Optional if you run Codex |
+| Codex | verified against `codex-cli` 0.153.4. Optional if you run Claude Code |
 | Python + Pillow | *only* to regenerate the app icon; the built icon is committed |
 
 Signing: **ad-hoc works fine.** A certificate is optional and only affects the AppleScript focus path —
@@ -80,14 +81,73 @@ make autostart     # optional: start at login
 
 ### What the install writes
 
-Whichever route, the only file outside its own install directory that Notchling touches is
-`~/.claude/settings.json`. It backs it up first, **appends** to the existing per-event hook arrays
-rather than replacing them (so other tools' hooks survive), verifies the result is valid JSON with
-exactly one entry per event, and refuses to touch a settings file it cannot parse.
+Whichever route, the only files outside its own install directory that Notchling touches are
+`~/.claude/settings.json` and `~/.codex/hooks.json` — one per agent, and only the one you said yes to.
+It backs each up first, **appends** to the existing per-event hook arrays rather than replacing them
+(so other tools' hooks survive), verifies the result is valid JSON with exactly one entry per event,
+and refuses to touch a file it cannot parse.
 
-The Homebrew formula itself never touches that file: a package manager rewriting another tool's
+Appending rather than inserting matters more for Codex than it reads. Codex records which hooks you
+have trusted by their *position* in the file, so an entry put anywhere but the end renumbers the groups
+after it and quietly invalidates the decisions you already made about other tools' hooks.
+
+The Homebrew formula itself never touches either file: a package manager rewriting another tool's
 configuration would be invisible and undone by nothing on uninstall, which is why `setup` is a separate
 command that asks.
+
+## Codex
+
+Wired separately, and worth wiring separately: it is the same widget with less to go on.
+
+```sh
+notchling-hooks install --provider codex     # or answer yes during `notchling-hooks setup`
+notchling-hooks status                       # what is wired, for both agents
+notchling-hooks uninstall --provider codex
+```
+
+Then **run `/hooks` inside Codex and review them**. Codex will not run a hook it has not been asked
+about, and it records that answer itself — so writing the file is not the last step, and nothing here
+can take that step for you. `notchling-hooks status` reports trust as unknown for exactly that reason:
+the record is a hash keyed by a hook's position, and a hash sitting at a position is no proof it
+matches what is there now.
+
+`CODEX_HOME` is honoured if you have moved Codex's directory.
+
+### What a Codex row shows, and what it cannot
+
+| | Claude Code | Codex |
+|---|---|---|
+| Appears without hooks wired | yes, from the session registry | **no** — there is no registry to read |
+| Working, needs you, done, idle | yes | yes |
+| Current tool, elapsed time, stalls | yes | yes |
+| Subagent progress | yes | yes |
+| Last message when a turn finishes | yes | yes |
+| Interrupted and compacting | — | yes |
+| Failed turn | yes | **no** — Codex has no event for one |
+| Session name | the title the agent derives | the working directory |
+| Context and plan usage | yes, via the status line | **no** — Codex has no status line slot |
+
+Two consequences of having no registry, both worth knowing before they surprise you. A Codex session
+appears only from its **first trusted hook event**, so one already running when you wired the hooks
+stays invisible until you start a new one. And restarting the widget forgets every Codex session until
+each speaks again — Claude Code sessions come straight back, because the registry is still there to be
+read.
+
+### Approving a permission prompt
+
+The widget shows a Codex permission request and never answers one. Codex lets a hook decide an approval
+by what it prints; `notchling-hook` prints nothing, ever, which means "no opinion" and leaves the
+question to you in the terminal where you can see what is being asked.
+
+One rough edge to expect: Codex emits nothing when you approve, so the row clears its `needs you` when
+the approved tool *finishes* rather than when you answer. A long command therefore keeps the row asking
+for attention it no longer needs.
+
+### Downgrading
+
+If you install a Notchling older than the one that added Codex support while `~/.codex/hooks.json`
+still points at it, that older hook ignores the argument naming the agent and reports Codex sessions as
+Claude Code ones. Run `notchling-hooks uninstall --provider codex` before downgrading.
 
 ## Upgrading
 
@@ -378,6 +438,7 @@ reliably clears it.
 | Path | |
 |---|---|
 | `~/.claude/settings.json` | hook entries, plus an optional status line. Backed up on every change. |
+| `~/.codex/hooks.json` | hook entries only. Backed up on every change. Never Codex's record of what you have trusted. |
 | `~/.notchling/events/` | the hook spool. Written by `notchling-hook`, drained and deleted by the app. |
 | `~/.notchling/events/failed/` | events the app could not read, kept rather than deleted. Normally empty — see below. |
 | `~/.notchling/usage/` | plan limits, one file per session. Pruned after 3 days. |
@@ -393,6 +454,8 @@ reliably clears it.
 | `~/Applications/Notchling.app` | the app, if you installed from a clone instead. |
 | `~/Library/LaunchAgents/local.notchling.plist` | only with `make autostart`. |
 | `~/.claude/sessions/` | **read only** — Claude Code's own registry. |
+| `~/.claude/projects/` | **read only** — two entries from a session's transcript: the derived title, and a `/color`. |
+| `~/.codex/sessions/` | **never read.** Every Codex event names a rollout file here; the path is not opened. |
 
 ## Uninstall
 
@@ -400,6 +463,7 @@ Unwire the hooks first, while the command that knows how to still exists:
 
 ```sh
 notchling-hooks uninstall
+notchling-hooks uninstall --provider codex   # only if you wired Codex
 notchling-hooks no-statusline
 brew services stop notchling
 brew uninstall notchling
@@ -416,6 +480,11 @@ From a clone, `make uninstall` does all of the above for that install, including
 `~/.notchling`.
 
 ## Troubleshooting
+
+**No Codex session appears at all** — either the hooks are not wired (`notchling-hooks status` says),
+or they are wired but not yet trusted (`/hooks` inside Codex says), or the session was started before
+one of those was true. Codex has no registry, so a session that has never emitted a trusted hook event
+is invisible; start a new one. `notchling-sessions` reports all three in one place.
 
 **A session shows only `idle`/`working`, never `needs you`** — its hooks aren't wired. Hooks are read
 at session start, so restart that session. Check with `jq '.hooks.PreToolUse' ~/.claude/settings.json`.

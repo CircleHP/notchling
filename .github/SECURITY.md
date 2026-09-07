@@ -22,14 +22,30 @@ Notchling sends no telemetry, and the only network request it makes is one it ha
 make — see [NOTICE.md](../NOTICE.md). That removes a category of risk but not all of it, and a security
 policy that only said "we send nothing" would be misleading. What is worth scrutiny:
 
-**`notchling-hook` runs on every tool call.** Claude Code executes it as a hook, with your environment,
-and acts on what it writes to stdout. Its contract is therefore that it never writes to stdout and
+**`notchling-hook` runs on every tool call.** Both agents execute it as a hook, with your environment,
+and both act on what it writes to stdout. Its contract is therefore that it never writes to stdout and
 never exits non-zero — a break in either can alter or interrupt a session rather than merely break the
 widget. Anything that can make it violate that is a genuine finding.
 
-**`install-hooks.sh` edits `~/.claude/settings.json`.** It backs the file up first, appends to the
-existing hook arrays so other tools' hooks survive, and removes only its own entries. A path that
-makes it clobber unrelated configuration, or write a command it did not resolve, is a finding. The
+Under Codex that contract carries more than it does under Claude Code. Codex lets a hook *decide* a
+permission request by what it prints, so a hook registered on `PermissionRequest` — which this one is —
+could approve a command on your behalf simply by printing the wrong thing. Printing nothing means "no
+opinion", which is what leaves the question in the terminal where you can see it. Anything that can put
+a single byte on that stdout is a finding of a different order from a broken widget.
+
+**`install-hooks.sh` edits `~/.claude/settings.json` and `~/.codex/hooks.json`.** It backs each file up
+first, appends to the existing hook arrays so other tools' hooks survive, and removes only its own
+entries. A path that makes it clobber unrelated configuration, or write a command it did not resolve,
+is a finding.
+
+Appending rather than inserting is load-bearing for Codex specifically: Codex keys a hook's trust
+decision by its position in the file, so an entry written anywhere but the end renumbers the groups
+after it and invalidates the decisions the user already made about other tools' hooks — silently, and
+in the direction of re-asking rather than of granting. Anything that inserts, reorders or renumbers is
+a finding. So is anything that writes Codex's trust state at all: that record is the user's answer to a
+question about executing code, and this project never writes it.
+
+The
 settings window runs this same script as a subprocess, from the copy in its own bundle rather than one
 found on `PATH`; a change that lets it run something else, or change a configuration without being
 clicked, belongs here too.
@@ -59,11 +75,17 @@ parses the formula's own text rather than asking `brew` for a version. Anything 
 tap, a repository or a formula other than this project's is a finding, as is anything that makes it run
 with an environment or a `brew` path it did not resolve itself.
 
-**A session's transcript is read, locally.** `TranscriptReader` scans backwards from the end of the
-session's own `.jsonl` under `~/.claude/projects/` for two entries recorded nowhere else: the title
-Claude derives, and a colour set with `/color`. Nothing else is taken from the file and nothing leaves
-the machine. A path that makes it read a file outside that directory, or forward any of it anywhere, is
-a finding.
+**A Claude Code session's transcript is read, locally.** `TranscriptReader` scans backwards from the end
+of the session's own `.jsonl` under `~/.claude/projects/` for two entries recorded nowhere else: the
+title Claude derives, and a colour set with `/color`. Nothing else is taken from the file and nothing
+leaves the machine. A path that makes it read a file outside that directory, or forward any of it
+anywhere, is a finding.
+
+**A Codex rollout is not read, and that is enforced rather than incidental.** Every Codex hook event
+names the session's rollout file under `~/.codex/sessions/`, and the reader above is gated so that path
+is never opened — the two entries it looks for exist only in Claude Code's format, so opening a rollout
+would mean scanning a conversation for records that cannot be in it. Anything that lets a Codex session
+reach a reader scoped to Claude Code is a finding, whether or not it finds anything.
 
 **What is out of scope:** the widget displaying content from a session you are already running —
 prompts, titles, tool names and error text are the user's own data, shown on the user's own screen.

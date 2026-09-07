@@ -1,6 +1,6 @@
 # Notchling
 
-**Keep an eye on every Claude Code session, right from your Mac’s notch.**
+**Keep an eye on every Claude Code and Codex session, right from your Mac’s notch.**
 
 See what’s working, what’s finished, and what needs you — then click a session to jump back to it.
 
@@ -16,24 +16,28 @@ See what’s working, what’s finished, and what needs you — then click a ses
   alerts and distinct sounds.
 - **Jump back with a click.** Go straight to the session’s tab or pane in Warp, iTerm2, and Terminal.app.
   Other supported terminals bring the app forward.
-- **Follow parallel work.** See your sessions in one place, most urgent first, with subagent progress
-  beneath each one and session names and colours you recognise.
+- **Follow parallel work.** See every session in one place whichever CLI it belongs to, most urgent
+  first, with subagent progress beneath each one and session names and colours you recognise.
 - **Keep usage in view.** Optional plan-usage and context meters show how much room you have left.
 - **Stay focused.** The widget never takes keyboard focus, and works across displays — including
   Macs and monitors without a notch.
 
 ## Get started
 
-You’ll need **macOS 14 Sonoma or later**, **Claude Code**, and **Homebrew**.
+You’ll need **macOS 14 Sonoma or later**, **Homebrew**, and **Claude Code**, **Codex**, or both.
 
 ```sh
 brew install CircleHP/notchling/notchling
 notchling-hooks setup
 ```
 
-Setup asks before configuring Claude Code, offers optional usage meters, and can start the widget now
-and at login. Restart any Claude Code sessions that were already running so they pick up the hooks.
-No Xcode or compilation needed.
+Setup asks before configuring each CLI it finds, offers optional usage meters, and can start the widget
+now and at login. Restart any sessions that were already running so they pick up the hooks — and for
+Codex, run `/hooks` in a session to review them, because Codex will not run a hook it has not been
+asked about. No Xcode or compilation needed.
+
+Codex rows show less than Claude Code rows do, and the [setup guide](SETUP.md#codex) says exactly what
+and why.
 
 Hover over the notch to see your sessions, click a row to return to work, and open the gear for settings.
 
@@ -41,8 +45,9 @@ See the [setup guide](SETUP.md) for other installation options, configuration, a
 
 ## Your sessions stay on your Mac
 
-Notchling reads session information locally, including session titles and colours. No telemetry,
-and no session data is sent anywhere. Update checks run only if you enable them or click **Check Now**;
+Notchling reads session information locally, including session titles and colours. It never reads a
+Codex conversation, even though every Codex event tells it where one is. No telemetry, and no session
+data is sent anywhere. Update checks run only if you enable them or click **Check Now**;
 installing an update is a separate choice. [Privacy details](NOTICE.md).
 
 ## Help and more
@@ -53,4 +58,4 @@ installing an update is a separate choice. [Privacy details](NOTICE.md).
 - [Build from source](SETUP.md#from-source) · [Contribute](.github/CONTRIBUTING.md)
 
 MIT licensed, including the mascot — see [LICENSE](LICENSE).
-Notchling is unofficial and not affiliated with Anthropic.
+Notchling is unofficial and not affiliated with Anthropic or OpenAI.

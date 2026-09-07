@@ -1,18 +1,27 @@
 # Notices
 
-## Not affiliated with Anthropic
+## Not affiliated with Anthropic or OpenAI
 
 Notchling is an unofficial, third-party tool. It is not made by, endorsed by,
-or affiliated with Anthropic. "Claude" and "Claude Code" are trademarks of
-Anthropic, PBC, used here only to describe what the tool observes.
+or affiliated with either. "Claude" and "Claude Code" are trademarks of
+Anthropic, PBC, and "Codex" is OpenAI's, used here only to describe what the
+tool observes.
 
-It reads Claude Code's own on-disk session registry and receives its hook events.
-It sends no telemetry, ever, and reports nothing about you anywhere. It reads two entries from a
-session's own transcript — the title Claude derives, and a colour set with `/color` — because they are
-recorded nowhere else; that is a local file read and nothing leaves the machine.
-Everything it writes lives under `~/.notchling/`, apart from `~/.claude/settings.json` — the hook
-entries and the optional status line, written only by `notchling-hooks` or by a button in the settings
-window, backed up on every change, and removable by the same commands.
+It reads Claude Code's own on-disk session registry and receives hook events from both agents.
+It sends no telemetry, ever, and reports nothing about you anywhere. It reads two entries from a Claude
+Code session's own transcript — the title Claude derives, and a colour set with `/color` — because they
+are recorded nowhere else; that is a local file read and nothing leaves the machine.
+
+It reads no Codex conversation at all. Every Codex hook event names that session's rollout file, and
+that path is deliberately never opened: the two entries above exist only in Claude Code's format, so
+reading a rollout would mean scanning somebody's conversation to find records that cannot be in it.
+Codex rows are built from hook events alone, which is why they show less.
+
+Everything it writes lives under `~/.notchling/`, apart from two files it is told to edit:
+`~/.claude/settings.json` — the hook entries and the optional status line — and `~/.codex/hooks.json`,
+the hook entries alone. Both are written only by `notchling-hooks` or by a button in the settings
+window, backed up on every change, and removable by the same commands. It never writes Codex's record
+of which hooks you have trusted; that answer is yours to give, inside Codex.
 
 It makes one kind of network connection, and never without being told to. The panel asks once whether
 it should check daily for a new release; unanswered and answered-no both mean it never connects of its
