@@ -218,6 +218,7 @@ private struct GeneralSettingsView: View {
     @State private var collection: Collection = .idle
     @State private var showsClaudeUsage = PanelPreference.showsPlanUsage(for: .claude)
     @State private var showsCodexUsage = PanelPreference.showsPlanUsage(for: .codex)
+    @AppStorage(PanelPreference.agentMarksKey) private var showsAgentMarks = PanelPreference.agentMarksDefault
     @State private var wiring: AgentWiring?
     @State private var wiringError: String?
     @State private var isWiring = false
@@ -241,19 +242,9 @@ private struct GeneralSettingsView: View {
                     Divider()
                     codex
                 }
-                // Both switches, where the status report could not be read at all. It says nothing
-                // about whose usage lines somebody wants drawn, and which agents this machine has is
-                // exactly what is unknown — so neither switch is put under an agent's heading, and
-                // neither becomes unreachable because a script failed.
-                if wiring == nil, wiringError != nil {
-                    Divider()
-                    panel
-                }
-            } else {
-                // No installer beside this build — a `swift run` rather than a bundle — so there are no
-                // agent blocks for these to sit under, and they would otherwise be unreachable.
-                panel
+                Divider()
             }
+            panel
             if updatesSupported {
                 Divider()
                 updateChecks
@@ -530,16 +521,34 @@ private struct GeneralSettingsView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// Only where the agent blocks are not drawn, or where nothing could be read to draw them with.
-    /// See the body.
+    /// What the panel draws for every agent at once.
     private var panel: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Panel")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
-            planUsageToggle(for: .claude, isOn: $showsClaudeUsage)
-            planUsageToggle(for: .codex, isOn: $showsCodexUsage)
+
+            Toggle("Show agent icons", isOn: $showsAgentMarks)
+            Text("A Claude Code or Codex mark at the start of each session. Off, a coloured dot shows "
+                + "the state instead — enough when you only run one of them.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if planUsageNeedsAHome {
+                planUsageToggle(for: .claude, isOn: $showsClaudeUsage)
+                planUsageToggle(for: .codex, isOn: $showsCodexUsage)
+            }
         }
+    }
+
+    /// The plan usage switches normally sit under their agent's heading. Here as well where there is no
+    /// heading to sit under: no installer beside this build — a `swift run` rather than a bundle — or a
+    /// status report that could not be read at all. That says nothing about whose usage lines somebody
+    /// wants drawn, and which agents this machine has is exactly what is unknown, so neither switch is
+    /// put under an agent's heading, and neither becomes unreachable because a script failed.
+    private var planUsageNeedsAHome: Bool {
+        !AgentSetup.isSupported || (wiring == nil && wiringError != nil)
     }
 
     private func planUsageFootnote(for provider: Provider) -> String {

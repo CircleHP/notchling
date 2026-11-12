@@ -225,7 +225,8 @@ whether it plays a sound, and which one — any sound in `/System/Library/Sounds
 still opens it.
 
 **Rows** are sorted most-urgent first and show the session name, what it's doing right now, elapsed time
-for the current turn, and a context meter. Hover a row for its working directory, the task it was given,
+for the current turn, and a context meter. Each is headed by its agent's mark; turning off **Show agent
+icons** in Settings puts a plain state dot there instead. Hover a row for its working directory, the task it was given,
 and whether focus will be precise. Click it to jump there.
 
 The **name** is the one you chose if you set one; otherwise the title Claude derives from the
