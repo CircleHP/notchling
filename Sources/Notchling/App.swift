@@ -93,8 +93,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.cues.clearDedupe(for: session.key)
             }
             self.cues.play(for: session, newState: newState)
+            guard let event = AlertEvent(state: newState) else { return }
 
             // The peek is the visual half of an alert, and the only half that says *which* session.
+            guard AlertPreference.allows(event, on: .popUp) else { return }
             switch newState {
             case .needsYou, .error:
                 self.widget?.peek(for: 5)
@@ -115,7 +117,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.onStalled = { [weak self] session in
             guard let self else { return }
             self.cues.playStalled(for: session)
-            self.widget?.peek(for: 4)
+            if AlertPreference.allows(.stalled, on: .popUp) {
+                self.widget?.peek(for: 4)
+            }
         }
 
         let spool = HookSpoolWatcher { [weak store] events in

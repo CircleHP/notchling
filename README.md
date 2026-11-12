@@ -13,7 +13,7 @@ See what’s working, what’s finished, and what needs you — then click a ses
 ## Stay on top of your sessions
 
 - **Know when you’re needed.** See permission prompts, failed turns, and finished work, with brief
-  alerts and distinct sounds.
+  alerts and distinct sounds — each one can be switched off in Settings.
 - **Jump back with a click.** Go straight to the session’s tab or pane in Warp, iTerm2, and Terminal.app.
   Other supported terminals bring the app forward.
 - **Follow parallel work.** See every session in one place whichever CLI it belongs to, most urgent
