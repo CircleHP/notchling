@@ -62,14 +62,20 @@ final class PreferencesWindowController: NSObject, NSWindowDelegate {
     /// The window takes its size from what the content asks for, and the content asks for a width and
     /// nothing else — so it has to *not* fill. A `maxHeight: .infinity` in there gives the hosting
     /// view an unbounded fitting size, and the window opens fifteen hundred points tall.
+    ///
+    /// The tabs differ in height, so the hosting controller reports its size through
+    /// `preferredContentSize` and the window follows it on every switch.
     private func install(content window: NSWindow) {
-        let view = NSHostingView(rootView: PreferencesView(
+        let host = NSHostingController(rootView: PreferencesView(
             updatesSupported: updatesSupported,
             setUpdateChecks: { [weak self] in self?.onUpdateChecksChanged?($0) },
             checkNow: { [weak self] in await self?.checkForUpdatesNow?() ?? "Unavailable" }
         ))
-        window.contentView = view
-        window.setContentSize(view.fittingSize)
+        host.sizingOptions = .preferredContentSize
+        window.contentViewController = host
+        // `preferredContentSize` arrives after a layout pass; `show()` centres the window before that,
+        // so the first size is set here.
+        window.setContentSize(host.view.fittingSize)
     }
 
     /// Hand focus back to whatever the person was doing. Closing the only window of an app that stays
@@ -114,18 +120,96 @@ private struct WiringRow: View {
     }
 }
 
+enum SettingsTab: CaseIterable {
+    case general
+    case notifications
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .notifications: "Notifications"
+        }
+    }
+}
+
+/// The identity header and the tab switch stay put; only the content below them changes.
 struct PreferencesView: View {
-    /// What the diagnostics button is doing, which is the only state on this window so far.
+    /// Wide enough for a sentence at a readable measure. Height is whatever the content comes to —
+    /// see `install(content:)`, which asks the hosting controller rather than deciding for it.
+    static let width: CGFloat = 400
+
+    let updatesSupported: Bool
+    let setUpdateChecks: (Bool) -> Void
+    let checkNow: () async -> String
+
+    /// Content is rebuilt on every open, so the window always opens on General.
+    @State private var tab: SettingsTab = .general
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            identity
+
+            Picker("Settings", selection: $tab) {
+                ForEach(SettingsTab.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+
+            // Both tabs stay alive and only the one shown takes up room. Rebuilding General on every
+            // switch would forget an install or a log collection that is still running, enable its
+            // button again while it runs, and read the wiring status afresh each time.
+            ZStack(alignment: .topLeading) {
+                GeneralSettingsView(
+                    updatesSupported: updatesSupported,
+                    setUpdateChecks: setUpdateChecks,
+                    checkNow: checkNow
+                )
+                .settingsPage(isShown: tab == .general)
+
+                NotificationsView()
+                    .settingsPage(isShown: tab == .notifications)
+            }
+        }
+        .padding(20)
+        .frame(width: Self.width, alignment: .leading)
+    }
+
+    private var identity: some View {
+        HStack(spacing: 10) {
+            BrandMarkView(height: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Notchling")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(InstalledBuild.running.map { "Version \($0)" } ?? "Version unknown")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private extension View {
+    /// A tab that is not shown keeps its state but takes no room and no input, so the window is sized
+    /// by the tab that is.
+    func settingsPage(isShown: Bool) -> some View {
+        frame(height: isShown ? nil : 0, alignment: .top)
+            .clipped()
+            .opacity(isShown ? 1 : 0)
+            .allowsHitTesting(isShown)
+            .disabled(!isShown)
+            .accessibilityHidden(!isShown)
+    }
+}
+
+private struct GeneralSettingsView: View {
+    /// What the diagnostics button is doing.
     private enum Collection: Equatable {
         case idle
         case running
         case collected(URL)
         case failed(String)
     }
-
-    /// Wide enough for a sentence at a readable measure. Height is whatever the content comes to —
-    /// see `makeWindow()`, which asks the hosting view rather than deciding for it.
-    static let width: CGFloat = 400
 
     let updatesSupported: Bool
     let setUpdateChecks: (Bool) -> Void
@@ -134,6 +218,7 @@ struct PreferencesView: View {
     @State private var collection: Collection = .idle
     @State private var showsClaudeUsage = PanelPreference.showsPlanUsage(for: .claude)
     @State private var showsCodexUsage = PanelPreference.showsPlanUsage(for: .codex)
+    @AppStorage(PanelPreference.agentMarksKey) private var showsAgentMarks = PanelPreference.agentMarksDefault
     @State private var wiring: AgentWiring?
     @State private var wiringError: String?
     @State private var isWiring = false
@@ -149,9 +234,7 @@ struct PreferencesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            identity
             if AgentSetup.isSupported {
-                Divider()
                 claudeCode
                 // Only for a machine that has Codex. An agent nobody here runs is not a row worth
                 // drawing, and a row offering to wire one is worse — it reads as something missing.
@@ -159,41 +242,15 @@ struct PreferencesView: View {
                     Divider()
                     codex
                 }
-                // Both switches, where the status report could not be read at all. It says nothing
-                // about whose usage lines somebody wants drawn, and which agents this machine has is
-                // exactly what is unknown — so neither switch is put under an agent's heading, and
-                // neither becomes unreachable because a script failed.
-                if wiring == nil, wiringError != nil {
-                    Divider()
-                    panel
-                }
-            } else {
-                // No installer beside this build — a `swift run` rather than a bundle — so there are no
-                // agent blocks for these to sit under, and they would otherwise be unreachable.
                 Divider()
-                panel
             }
+            panel
             if updatesSupported {
                 Divider()
                 updateChecks
             }
             Divider()
             diagnostics
-        }
-        .padding(20)
-        .frame(width: PreferencesView.width, alignment: .leading)
-    }
-
-    private var identity: some View {
-        HStack(spacing: 10) {
-            BrandMarkView(height: 16)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Notchling")
-                    .font(.system(size: 13, weight: .semibold))
-                Text(InstalledBuild.running.map { "Version \($0)" } ?? "Version unknown")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 
@@ -464,16 +521,34 @@ struct PreferencesView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// Only where the agent blocks are not drawn, or where nothing could be read to draw them with.
-    /// See the body.
+    /// What the panel draws for every agent at once.
     private var panel: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Panel")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
-            planUsageToggle(for: .claude, isOn: $showsClaudeUsage)
-            planUsageToggle(for: .codex, isOn: $showsCodexUsage)
+
+            Toggle("Show agent icons", isOn: $showsAgentMarks)
+            Text("A Claude Code or Codex mark at the start of each session. Off, a coloured dot shows "
+                + "the state instead — enough when you only run one of them.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if planUsageNeedsAHome {
+                planUsageToggle(for: .claude, isOn: $showsClaudeUsage)
+                planUsageToggle(for: .codex, isOn: $showsCodexUsage)
+            }
         }
+    }
+
+    /// The plan usage switches normally sit under their agent's heading. Here as well where there is no
+    /// heading to sit under: no installer beside this build — a `swift run` rather than a bundle — or a
+    /// status report that could not be read at all. That says nothing about whose usage lines somebody
+    /// wants drawn, and which agents this machine has is exactly what is unknown, so neither switch is
+    /// put under an agent's heading, and neither becomes unreachable because a script failed.
+    private var planUsageNeedsAHome: Bool {
+        !AgentSetup.isSupported || (wiring == nil && wiringError != nil)
     }
 
     private func planUsageFootnote(for provider: Provider) -> String {
@@ -579,5 +654,130 @@ struct PreferencesView: View {
                 )
             }
         }
+    }
+}
+
+/// The alert preferences as something a view can observe. Holds nothing of its own: every read goes to
+/// `AlertPreference`, and `revision` exists only so a write redraws whatever read before it.
+@MainActor
+@Observable
+private final class AlertSettings {
+    private var revision = 0
+
+    var isEnabled: Bool {
+        get { _ = revision; return AlertPreference.isEnabled() }
+        set { AlertPreference.setEnabled(newValue); revision += 1 }
+    }
+
+    func isChecked(_ event: AlertEvent, on channel: AlertChannel) -> Bool {
+        _ = revision
+        return AlertPreference.isChecked(event, on: channel)
+    }
+
+    func setChecked(_ checked: Bool, _ event: AlertEvent, on channel: AlertChannel) {
+        AlertPreference.setChecked(checked, event, on: channel)
+        revision += 1
+    }
+
+    func soundName(for event: AlertEvent) -> String {
+        _ = revision
+        return AlertPreference.soundName(for: event)
+    }
+
+    func setSound(_ name: String, for event: AlertEvent) {
+        AlertPreference.setSound(name, for: event)
+        revision += 1
+    }
+}
+
+/// Which session events alert, and how.
+///
+/// Written straight to the preference: the app reads it when an event fires, so there is nothing to
+/// tell.
+private struct NotificationsView: View {
+    @State private var settings = AlertSettings()
+    /// Read once per open. A sound added to `~/Library/Sounds` while the window is up appears the next
+    /// time it opens.
+    @State private var available = SoundLibrary.playableNames()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Alert on session events", isOn: $settings.isEnabled)
+
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+                GridRow {
+                    Text(verbatim: "")
+                    Text("Pop-up")
+                    Text("Sound")
+                        .gridCellColumns(2)
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+
+                ForEach(AlertEvent.allCases, id: \.self) { event in
+                    GridRow {
+                        // `disabled` greys the checkboxes but not plain text.
+                        Text(event.label)
+                            .foregroundStyle(settings.isEnabled ? .primary : .secondary)
+                        ForEach(AlertChannel.allCases, id: \.self) { channel in
+                            Toggle(event.label, isOn: checked(event, channel))
+                                .toggleStyle(.checkbox)
+                                .labelsHidden()
+                                .gridColumnAlignment(.center)
+                        }
+                        soundChoice(for: event)
+                            .disabled(!settings.isChecked(event, on: .sound))
+                    }
+                }
+            }
+            .padding(.leading, 20)
+            .disabled(!settings.isEnabled)
+
+            Text("Which events open the panel on their own, and which play a sound. Choosing a sound "
+                + "plays it. Hovering the widget always opens it.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Choosing a sound saves it and plays it, like the Sound settings in macOS. The button replays the
+    /// current choice without changing anything.
+    private func soundChoice(for event: AlertEvent) -> some View {
+        let selection = Binding(
+            get: { settings.soundName(for: event) },
+            set: { name in
+                settings.setSound(name, for: event)
+                Self.preview(name)
+            }
+        )
+        return HStack(spacing: 4) {
+            Picker("Sound for \(event.label)", selection: selection) {
+                ForEach(available, id: \.self) { Text($0).tag($0) }
+            }
+            .labelsHidden()
+            .fixedSize()
+
+            Button {
+                Self.preview(selection.wrappedValue)
+            } label: {
+                Image(systemName: "play.fill")
+            }
+            .buttonStyle(.borderless)
+            .help("Play")
+        }
+    }
+
+    private static func preview(_ name: String) {
+        guard let sound = NSSound(named: name) else { return }
+        sound.stop()
+        sound.play()
+    }
+
+    private func checked(_ event: AlertEvent, _ channel: AlertChannel) -> Binding<Bool> {
+        Binding(
+            get: { settings.isChecked(event, on: channel) },
+            set: { settings.setChecked($0, event, on: channel) }
+        )
     }
 }

@@ -288,7 +288,7 @@ struct SoundCuesTests {
     @Test("each notifiable state has its own sound")
     func soundPerState() {
         var played: [String] = []
-        let cues = SoundCues { played.append($0) }
+        let cues = SoundCues(isAudible: { _ in true }) { played.append($0.defaultSound) }
 
         cues.play(for: session("a"), newState: .needsYou)
         cues.play(for: session("b"), newState: .done)
@@ -296,10 +296,39 @@ struct SoundCuesTests {
         #expect(played == ["Submarine", "Glass", "Basso"])
     }
 
+    @Test("a muted event plays nothing")
+    func mutedIsSilent() {
+        var played: [String] = []
+        let cues = SoundCues(isAudible: { $0 != .done }) { played.append($0.defaultSound) }
+
+        cues.play(for: session("a"), newState: .done)
+        cues.play(for: session("b"), newState: .needsYou)
+        #expect(played == ["Submarine"])
+    }
+
+    /// Muting is a choice about the speaker, not about what has happened. A prompt that arrived while
+    /// muted is still the prompt that is up when the sound is turned back on.
+    @Test("an event that arrives muted is still remembered")
+    func mutedStillDedupes() {
+        var played: [String] = []
+        var audible = false
+        let cues = SoundCues(isAudible: { _ in audible }) { played.append($0.defaultSound) }
+
+        cues.play(for: session(), newState: .needsYou)
+        cues.playStalled(for: session("s", prompt: "turn-1"))
+        audible = true
+        cues.play(for: session(), newState: .needsYou)
+        cues.playStalled(for: session("s", prompt: "turn-1"))
+        #expect(played.isEmpty, "neither is new information")
+
+        cues.playStalled(for: session("s", prompt: "turn-2"))
+        #expect(played == ["Tink"])
+    }
+
     @Test("working and idle are silent")
     func silentStates() {
         var played: [String] = []
-        let cues = SoundCues { played.append($0) }
+        let cues = SoundCues(isAudible: { _ in true }) { played.append($0.defaultSound) }
         cues.play(for: session(), newState: .working)
         cues.play(for: session(), newState: .idle)
         #expect(played.isEmpty)
@@ -308,7 +337,7 @@ struct SoundCuesTests {
     @Test("re-entering a state without leaving it stays quiet")
     func dedupePerEdge() {
         var played: [String] = []
-        let cues = SoundCues { played.append($0) }
+        let cues = SoundCues(isAudible: { _ in true }) { played.append($0.defaultSound) }
 
         cues.play(for: session(), newState: .needsYou)
         cues.play(for: session(), newState: .needsYou)
@@ -319,7 +348,7 @@ struct SoundCuesTests {
     @Test("leaving and re-entering sounds again")
     func rearmsAfterLeaving() {
         var played: [String] = []
-        let cues = SoundCues { played.append($0) }
+        let cues = SoundCues(isAudible: { _ in true }) { played.append($0.defaultSound) }
 
         cues.play(for: session(), newState: .needsYou)
         cues.clearDedupe(for: SessionKey(provider: .claude, id: "s"))
@@ -330,7 +359,7 @@ struct SoundCuesTests {
     @Test("dedupe is per session, not global")
     func dedupeIsPerSession() {
         var played: [String] = []
-        let cues = SoundCues { played.append($0) }
+        let cues = SoundCues(isAudible: { _ in true }) { played.append($0.defaultSound) }
         cues.play(for: session("a"), newState: .needsYou)
         cues.play(for: session("b"), newState: .needsYou)
         #expect(played.count == 2)
@@ -339,7 +368,7 @@ struct SoundCuesTests {
     @Test("a stalled turn sounds once, and the next turn is new information")
     func stallKeyedByTurn() {
         var played: [String] = []
-        let cues = SoundCues { played.append($0) }
+        let cues = SoundCues(isAudible: { _ in true }) { played.append($0.defaultSound) }
 
         cues.playStalled(for: session("a", prompt: "turn-1"))
         cues.playStalled(for: session("a", prompt: "turn-1"))

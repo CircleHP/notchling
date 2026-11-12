@@ -13,7 +13,7 @@ See what’s working, what’s finished, and what needs you — then click a ses
 ## Stay on top of your sessions
 
 - **Know when you’re needed.** See permission prompts, failed turns, and finished work, with brief
-  alerts and distinct sounds.
+  alerts and distinct sounds — each one can be switched off in Settings.
 - **Jump back with a click.** Go straight to the session’s tab or pane in Warp, iTerm2, and Terminal.app.
   Other supported terminals bring the app forward.
 - **Follow parallel work.** See every session in one place whichever CLI it belongs to, most urgent
@@ -54,8 +54,8 @@ See the [setup guide](SETUP.md) for other installation options, configuration, a
 
 Notchling reads session information locally, including session titles, colours, context and plan
 limits. It reads a handful of named records and nothing else — a Codex session's own file holds the
-conversation too, and the lines carrying it are discarded on their size before anything parses them. No
-telemetry, and no session data is sent anywhere. Update checks run only if you enable them or click **Check Now**;
+conversation too, and the lines carrying it are discarded on their size before anything parses them.
+Beyond that it only lists your sound folders, to offer alert sounds. No telemetry, and no session data is sent anywhere. Update checks run only if you enable them or click **Check Now**;
 installing an update is a separate choice. [Privacy details](NOTICE.md).
 
 ## Help and more

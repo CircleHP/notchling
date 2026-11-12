@@ -11,12 +11,20 @@ struct SessionRow: View {
 
     @Environment(\.widgetMetrics) private var metrics
     @State private var isHovering = false
+    /// Observed rather than read once, so flipping the switch redraws a panel that is already open.
+    @AppStorage(PanelPreference.agentMarksKey) private var showsAgentMarks = PanelPreference.agentMarksDefault
 
     var body: some View {
         Button { onFocus(session) } label: {
             HStack(alignment: .top, spacing: metrics.size(8)) {
-                SessionMark(provider: session.provider, state: session.state)
-                    .padding(.top, metrics.size(3))
+                Group {
+                    if showsAgentMarks {
+                        SessionMark(provider: session.provider, state: session.state)
+                    } else {
+                        StateDot(state: session.state)
+                    }
+                }
+                .padding(.top, metrics.size(3))
 
                 VStack(alignment: .leading, spacing: metrics.size(1)) {
                     titleLine
@@ -216,6 +224,33 @@ private struct SessionMark: View {
         PixelBitmapView(bitmap: ProviderArt.mark(for: provider), color: Theme.color(for: state))
             // Twelve rather than nine: the marks are fourteen pixels across, and at nine a cell lands
             // on barely more than one device pixel — enough to blur a single-cell spoke away.
+            .frame(width: metrics.size(12), height: metrics.size(12))
+    }
+}
+
+/// The head of a row for someone who runs one agent and has turned the marks off: the state alone.
+private struct StateDot: View {
+    let state: SessionState
+
+    @Environment(\.widgetMetrics) private var metrics
+
+    var body: some View {
+        Circle()
+            .fill(Theme.color(for: state))
+            .frame(width: metrics.size(6), height: metrics.size(6))
+            .overlay {
+                // A ring on the states that want attention, so they stay distinguishable without
+                // relying on colour alone.
+                if state == .needsYou || state == .error {
+                    Circle()
+                        .stroke(
+                            Theme.color(for: state).opacity(Theme.attentionRingOpacity),
+                            lineWidth: metrics.size(3)
+                        )
+                        .frame(width: metrics.size(11), height: metrics.size(11))
+                }
+            }
+            // The mark's box, so turning the marks off moves nothing else on the row.
             .frame(width: metrics.size(12), height: metrics.size(12))
     }
 }

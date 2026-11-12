@@ -38,4 +38,20 @@ enum PanelPreference {
     static func key(for provider: Provider) -> String {
         provider == .claude ? planUsageKey : "showPlanUsage.\(provider.rawValue)"
     }
+
+    static let agentMarksKey = "showAgentMarks"
+    /// Also the default every `@AppStorage` on `agentMarksKey` declares, so there is one answer to
+    /// what an absent key means.
+    static let agentMarksDefault = true
+
+    /// Whether a session row opens with its agent's mark or with a plain state dot. The mark only says
+    /// something on a machine running both agents; someone who runs one of them can have the dot back.
+    /// On unless turned off, so nobody's rows change on upgrade.
+    static var showsAgentMarks: Bool {
+        UserDefaults.standard.object(forKey: agentMarksKey) as? Bool ?? agentMarksDefault
+    }
+
+    static func setShowsAgentMarks(_ shown: Bool) {
+        UserDefaults.standard.set(shown, forKey: agentMarksKey)
+    }
 }

@@ -107,4 +107,38 @@ struct PanelPreferenceTests {
             #expect(store.usage[.codex] == nil, "the real preference reached the store")
         }
     }
+
+    private func withAgentMarks(_ value: Bool?, _ body: () -> Void) {
+        let key = PanelPreference.agentMarksKey
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let saved {
+                UserDefaults.standard.set(saved, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+        if let value {
+            PanelPreference.setShowsAgentMarks(value)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+        body()
+    }
+
+    @Test("agent marks are shown unless turned off, so an upgrade changes nobody's rows")
+    func agentMarksDefaultToOn() {
+        withAgentMarks(nil) {
+            #expect(PanelPreference.showsAgentMarks)
+        }
+    }
+
+    @Test("turning the agent marks off survives a read back")
+    func agentMarksRoundTrip() {
+        withAgentMarks(false) {
+            #expect(!PanelPreference.showsAgentMarks)
+            PanelPreference.setShowsAgentMarks(true)
+            #expect(PanelPreference.showsAgentMarks)
+        }
+    }
 }

@@ -136,6 +136,7 @@ final class WidgetPresenter {
             store: store,
             state: state,
             onHover: { [weak self] hovering in self?.hoverChanged(hovering) },
+            pointerInWindow: { [weak self] in self?.pointerInWindow() },
             onContentGeometry: { [weak self] presentation, geometry in
                 self?.contentGeometryChanged(presentation, geometry)
             },
@@ -230,6 +231,13 @@ final class WidgetPresenter {
         // it has been offered, and without this the first frames are laid out against the *old* width, so
         // the shape starts anchored to one edge and slides across. Measured once at 166pt off centre.
         panel.layoutIfNeeded()
+    }
+
+    /// Flipped to match SwiftUI, whose coordinates start top-left where AppKit's start bottom-left.
+    private func pointerInWindow() -> CGPoint? {
+        guard let panel else { return nil }
+        let point = panel.convertPoint(fromScreen: NSEvent.mouseLocation)
+        return CGPoint(x: point.x, y: panel.frame.height - point.y)
     }
 
     private func hoverChanged(_ hovering: Bool) {

@@ -219,8 +219,14 @@ The mascot is present in every state, and the state changes its **face** and **c
 Sounds, when a session changes state: Submarine for needs-you, Glass for done, Basso for failed, Tink
 for a stalled turn. Each fires once per edge.
 
+The **Notifications** tab in Settings chooses, per event, whether it opens the panel on its own,
+whether it plays a sound, and which one — any sound in `/System/Library/Sounds`, `/Library/Sounds` or
+`~/Library/Sounds`. Turning off *Alert on session events* silences all of them; hovering the widget
+still opens it.
+
 **Rows** are sorted most-urgent first and show the session name, what it's doing right now, elapsed time
-for the current turn, and a context meter. Hover a row for its working directory, the task it was given,
+for the current turn, and a context meter. Each is headed by its agent's mark; turning off **Show agent
+icons** in Settings puts a plain state dot there instead. Hover a row for its working directory, the task it was given,
 and whether focus will be precise. Click it to jump there.
 
 The **name** is the one you chose if you set one; otherwise the title Claude derives from the
@@ -538,8 +544,8 @@ hooks are wired; a session started before that reports nothing about its agents.
 **Nothing in the notch at all** — `pgrep -x Notchling`. On a Mac without a notch this is expected:
 the widget only appears on hover or on a state change.
 
-**No sounds** — check output volume and whether Do Not Disturb is muting alert sounds. The peek is
-independent, so if the panel opens and you hear nothing, it's the audio side.
+**No sounds** — check **Settings → Notifications**, then output volume and whether Do Not Disturb is
+muting alert sounds. The peek is independent, so if the panel opens and you hear nothing, it's the audio side.
 
 **macOS keeps asking to control iTerm2 / Terminal** — the bundle is ad-hoc signed, so its signature
 changes each reinstall and the permission grant stops matching. See
