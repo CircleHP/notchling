@@ -26,6 +26,9 @@ struct WidgetView: View {
     let presentation: WidgetPresentation
     let isTransitioning: Bool
     let onHover: (Bool) -> Void
+    /// Where the pointer is now, in the window's coordinates with the origin top-left, or nil without a
+    /// window. Read live rather than remembered, because the window moves and resizes under it.
+    let pointerInWindow: () -> CGPoint?
     let onContentGeometry: (WidgetPresentation, WidgetContentGeometry) -> Void
     let actions: WidgetActions
 
@@ -35,6 +38,8 @@ struct WidgetView: View {
     @State private var expandedNatural: CGSize = .zero
     /// The badge cluster's own width, which is the only part of the strip that changes size.
     @State private var trailingWidth: CGFloat = 0
+    /// The layout box in window coordinates. The silhouette is drawn centred inside it.
+    @State private var hoverFrame: CGRect = .zero
 
     private var isExpanded: Bool { presentation == .expanded }
 
@@ -75,17 +80,24 @@ struct WidgetView: View {
                     .fill(Theme.chrome)
                     .padding(-60)
             }
-            .mask {
-                AnimatedWidgetShape(
-                    width: target.width,
-                    height: max(target.height, metrics.anchorSize.height),
-                    topRadius: topRadius,
-                    bottomRadius: bottomRadius
-                )
+            .mask { silhouette }
+            // The hover target is the drawn shape, not the layout box around it. The box is wider than
+            // the strip by the transparent fillets, and stays the size of the open panel while it
+            // collapses — hovering it would open the panel from empty space. The shape still covers
+            // the dead space over a physical notch, which is the part of it people actually aim at.
+            //
+            // `onHover` and `contentShape` both answer for the whole box, so the pointer is tested
+            // against the path here: on every move, and whenever the shape changes under a pointer
+            // that is not moving — a peek opening the panel beneath it, say.
+            .onContinuousHover { phase in
+                switch phase {
+                case .active: recheckHover()
+                case .ended: onHover(false)
+                }
             }
-            // The whole shape is the hover target, including the dead space over a physical notch —
-            // that is the part of it people actually aim at.
-            .onHover(perform: onHover)
+            .onChange(of: presentation) { recheckHover() }
+            .onChange(of: hoverFrame) { recheckHover() }
+            .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) { hoverFrame = $0 }
             // The window is sized from this. A window is opaque to clicks across its whole rect, even
             // where it draws nothing, so any slack is a dead zone over whatever is underneath.
             .onGeometryChange(for: CGSize.self, of: \.size) {
@@ -101,6 +113,25 @@ struct WidgetView: View {
     /// has no measurement yet, and falling back to natural size there is what grows out of one side.
     private var expandedWidth: CGFloat {
         metrics.size(ExpandedView.panelWidth + 28) + topRadius * 2
+    }
+
+    private func recheckHover() {
+        guard let pointer = pointerInWindow() else {
+            onHover(false)
+            return
+        }
+        let local = CGPoint(x: pointer.x - hoverFrame.minX, y: pointer.y - hoverFrame.minY)
+        onHover(silhouette.path(in: CGRect(origin: .zero, size: hoverFrame.size)).contains(local))
+    }
+
+    /// What is drawn, and the only part of the window that answers to the pointer.
+    private var silhouette: AnimatedWidgetShape {
+        AnimatedWidgetShape(
+            width: target.width,
+            height: max(target.height, metrics.anchorSize.height),
+            topRadius: topRadius,
+            bottomRadius: bottomRadius
+        )
     }
 
     /// The size the *mask* should be right now. Animated, per frame, as four numbers.

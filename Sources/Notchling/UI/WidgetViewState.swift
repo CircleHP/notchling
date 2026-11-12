@@ -24,6 +24,7 @@ struct WidgetRoot: View {
     let store: SessionStore
     let state: WidgetViewState
     let onHover: (Bool) -> Void
+    let pointerInWindow: () -> CGPoint?
     let onContentGeometry: (WidgetPresentation, WidgetContentGeometry) -> Void
     let actions: WidgetActions
 
@@ -34,6 +35,7 @@ struct WidgetRoot: View {
             presentation: state.presentation,
             isTransitioning: state.isTransitioning,
             onHover: onHover,
+            pointerInWindow: pointerInWindow,
             onContentGeometry: onContentGeometry,
             actions: actions
         )
