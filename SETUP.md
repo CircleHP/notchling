@@ -219,9 +219,10 @@ The mascot is present in every state, and the state changes its **face** and **c
 Sounds, when a session changes state: Submarine for needs-you, Glass for done, Basso for failed, Tink
 for a stalled turn. Each fires once per edge.
 
-The **Notifications** tab in Settings chooses, per event, whether it opens the panel on its own and
-whether it plays its sound. Turning off *Alert on session events* silences all of them; hovering the
-widget still opens it.
+The **Notifications** tab in Settings chooses, per event, whether it opens the panel on its own,
+whether it plays a sound, and which one — any sound in `/System/Library/Sounds`, `/Library/Sounds` or
+`~/Library/Sounds`. Turning off *Alert on session events* silences all of them; hovering the widget
+still opens it.
 
 **Rows** are sorted most-urgent first and show the session name, what it's doing right now, elapsed time
 for the current turn, and a context meter. Hover a row for its working directory, the task it was given,

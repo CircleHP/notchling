@@ -9,7 +9,7 @@
 //  widget that only opens when you point at it.
 //
 
-import Foundation
+import AppKit
 
 /// The events that alert. One per row of the settings grid.
 enum AlertEvent: String, CaseIterable, Sendable {
@@ -26,6 +26,16 @@ enum AlertEvent: String, CaseIterable, Sendable {
         case .error: self = .error
         case .done: self = .done
         case .working, .idle: return nil
+        }
+    }
+
+    /// What this event plays until another sound is chosen for it.
+    var defaultSound: String {
+        switch self {
+        case .needsYou: "Submarine"
+        case .error: "Basso"
+        case .stalled: "Tink"
+        case .done: "Glass"
         }
     }
 
@@ -87,5 +97,74 @@ enum AlertPreference {
         in defaults: UserDefaults = .standard
     ) -> Bool {
         isEnabled(in: defaults) && isChecked(event, on: channel, in: defaults)
+    }
+
+    static func soundKey(for event: AlertEvent) -> String {
+        "alerts.soundName.\(event.rawValue)"
+    }
+
+    /// The sound this event plays, loaded once. A choice that no longer loads — a file since removed
+    /// from `~/Library/Sounds` — falls back to the default rather than going silent.
+    static func sound(
+        for event: AlertEvent,
+        in defaults: UserDefaults = .standard,
+        load: (String) -> NSSound? = { NSSound(named: $0) }
+    ) -> NSSound? {
+        if let chosen = defaults.string(forKey: soundKey(for: event)), let sound = load(chosen) {
+            return sound
+        }
+        return load(event.defaultSound)
+    }
+
+    /// The name of the sound this event plays, by the same fallback as `sound(for:)`. For showing the
+    /// choice, so the settings never name a sound other than the one an alert plays.
+    static func soundName(
+        for event: AlertEvent,
+        in defaults: UserDefaults = .standard,
+        isAvailable: (String) -> Bool = { NSSound(named: $0) != nil }
+    ) -> String {
+        guard let chosen = defaults.string(forKey: soundKey(for: event)), isAvailable(chosen) else {
+            return event.defaultSound
+        }
+        return chosen
+    }
+
+    static func setSound(_ name: String, for event: AlertEvent, in defaults: UserDefaults = .standard) {
+        defaults.set(name, forKey: soundKey(for: event))
+    }
+}
+
+/// The sounds `NSSound(named:)` can find: the system's, and any the user or an admin installed.
+enum SoundLibrary {
+    static let directories: [URL] = [
+        URL(fileURLWithPath: "/System/Library/Sounds"),
+        URL(fileURLWithPath: "/Library/Sounds"),
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Sounds"),
+    ]
+
+    private static let extensions: Set<String> = ["aif", "aiff", "caf", "wav", "m4a", "mp3"]
+
+    /// Names without extensions, which is what `NSSound(named:)` takes. A name in more than one
+    /// directory is listed once — it resolves to one file either way.
+    static func names(in directories: [URL] = directories) -> [String] {
+        let files = directories.flatMap { directory in
+            (try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil
+            )) ?? []
+        }
+        let names = files
+            .filter { extensions.contains($0.pathExtension.lowercased()) }
+            .map { $0.deletingPathExtension().lastPathComponent }
+        return Set(names).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    /// The names that actually load. A file in one of the directories that `NSSound` cannot decode
+    /// would otherwise be offered, saved, and then silently replaced by the default on every alert.
+    static func playableNames(
+        in directories: [URL] = directories,
+        isAvailable: (String) -> Bool = { NSSound(named: $0) != nil }
+    ) -> [String] {
+        names(in: directories).filter(isAvailable)
     }
 }

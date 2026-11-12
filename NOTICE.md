@@ -24,6 +24,10 @@ discarded before anything looks at it, and the records being sought run to under
 carrying what anybody said run to hundreds. Only a line naming one of those two records is given to a
 JSON parser at all. Nothing is sent anywhere, from either file.
 
+To offer a choice of alert sounds, the settings window lists the names of the files in
+`/System/Library/Sounds`, `/Library/Sounds` and `~/Library/Sounds`. The only one of them it opens is a
+sound it is about to play.
+
 Everything it writes lives under `~/.notchling/`, apart from two files it is told to edit:
 `~/.claude/settings.json` — the hook entries and the optional status line — and `~/.codex/hooks.json`,
 the hook entries alone. Both are written only by `notchling-hooks` or by a button in the settings

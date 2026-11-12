@@ -93,7 +93,7 @@ struct SessionIdentityTests {
     @Test("one agent's cue does not silence the other's")
     func cuesDoNotDedupeAcrossProviders() {
         var played: [String] = []
-        let cues = SoundCues(isAudible: { _ in true }) { played.append($0) }
+        let cues = SoundCues(isAudible: { _ in true }) { played.append($0.defaultSound) }
 
         cues.play(for: Session(sessionID: sameID, provider: .claude), newState: .needsYou)
         cues.play(for: Session(sessionID: sameID, provider: .codex), newState: .needsYou)

@@ -669,6 +669,16 @@ private final class AlertSettings {
         AlertPreference.setChecked(checked, event, on: channel)
         revision += 1
     }
+
+    func soundName(for event: AlertEvent) -> String {
+        _ = revision
+        return AlertPreference.soundName(for: event)
+    }
+
+    func setSound(_ name: String, for event: AlertEvent) {
+        AlertPreference.setSound(name, for: event)
+        revision += 1
+    }
 }
 
 /// Which session events alert, and how.
@@ -677,16 +687,20 @@ private final class AlertSettings {
 /// tell.
 private struct NotificationsView: View {
     @State private var settings = AlertSettings()
+    /// Read once per open. A sound added to `~/Library/Sounds` while the window is up appears the next
+    /// time it opens.
+    @State private var available = SoundLibrary.playableNames()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Toggle("Alert on session events", isOn: $settings.isEnabled)
 
-            Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 4) {
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
                 GridRow {
                     Text(verbatim: "")
                     Text("Pop-up")
                     Text("Sound")
+                        .gridCellColumns(2)
                 }
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
@@ -702,18 +716,53 @@ private struct NotificationsView: View {
                                 .labelsHidden()
                                 .gridColumnAlignment(.center)
                         }
+                        soundChoice(for: event)
+                            .disabled(!settings.isChecked(event, on: .sound))
                     }
                 }
             }
             .padding(.leading, 20)
             .disabled(!settings.isEnabled)
 
-            Text("Which events open the panel on their own, and which play a sound. Hovering the widget "
-                + "always opens it.")
+            Text("Which events open the panel on their own, and which play a sound. Choosing a sound "
+                + "plays it. Hovering the widget always opens it.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// Choosing a sound saves it and plays it, like the Sound settings in macOS. The button replays the
+    /// current choice without changing anything.
+    private func soundChoice(for event: AlertEvent) -> some View {
+        let selection = Binding(
+            get: { settings.soundName(for: event) },
+            set: { name in
+                settings.setSound(name, for: event)
+                Self.preview(name)
+            }
+        )
+        return HStack(spacing: 4) {
+            Picker("Sound for \(event.label)", selection: selection) {
+                ForEach(available, id: \.self) { Text($0).tag($0) }
+            }
+            .labelsHidden()
+            .fixedSize()
+
+            Button {
+                Self.preview(selection.wrappedValue)
+            } label: {
+                Image(systemName: "play.fill")
+            }
+            .buttonStyle(.borderless)
+            .help("Play")
+        }
+    }
+
+    private static func preview(_ name: String) {
+        guard let sound = NSSound(named: name) else { return }
+        sound.stop()
+        sound.play()
     }
 
     private func checked(_ event: AlertEvent, _ channel: AlertChannel) -> Binding<Bool> {

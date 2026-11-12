@@ -18,7 +18,7 @@ final class SoundCues {
 
     /// Injectable only so the deduplication above can be asserted on; the dedupe is the logic here,
     /// and it has no other observable output.
-    private let play: (String) -> Void
+    private let play: (AlertEvent) -> Void
     /// Whether an event's sound is switched on. Consulted *after* the dedupe is updated, so an event
     /// that arrives muted is still remembered: turning the sound on mid-prompt must not announce a
     /// prompt that was already up.
@@ -26,7 +26,7 @@ final class SoundCues {
 
     init(
         isAudible: @escaping (AlertEvent) -> Bool = { AlertPreference.allows($0, on: .sound) },
-        play: @escaping (String) -> Void = { NSSound(named: $0)?.play() }
+        play: @escaping (AlertEvent) -> Void = { AlertPreference.sound(for: $0)?.play() }
     ) {
         self.isAudible = isAudible
         self.play = play
@@ -37,7 +37,7 @@ final class SoundCues {
         guard lastPlayed[session.key] != newState else { return }
         lastPlayed[session.key] = newState
 
-        if isAudible(event) { play(Self.sound(for: event)) }
+        if isAudible(event) { play(event) }
     }
 
     /// Keyed by turn rather than by session: one long turn should say so once, and the *next* turn
@@ -49,16 +49,7 @@ final class SoundCues {
 
         if stallPlayed.count > 500 { stallPlayed.removeAll() }
 
-        if isAudible(.stalled) { play(Self.sound(for: .stalled)) }
-    }
-
-    private static func sound(for event: AlertEvent) -> String {
-        switch event {
-        case .needsYou: "Submarine"
-        case .error: "Basso"
-        case .stalled: "Tink"
-        case .done: "Glass"
-        }
+        if isAudible(.stalled) { play(.stalled) }
     }
 
     /// Called when a session leaves a notifiable state, so the next entry sounds again.
